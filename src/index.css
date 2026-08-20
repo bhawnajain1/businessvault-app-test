@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens — Vercel/Linear-style neutral palette + single accent.
+   Consumed by Tailwind theme.extend.colors as bg-app/bg-surface/text-fg/etc. */
+:root {
+  color-scheme: light;
+  --bv-app: 250 250 250;         /* page bg — near-white */
+  --bv-surface: 255 255 255;     /* cards, drawers, table */
+  --bv-surface-hover: 245 245 245;
+  --bv-elevated: 255 255 255;
+  --bv-border: 229 229 229;      /* hairline */
+  --bv-border-strong: 212 212 212;
+  --bv-fg: 10 10 10;             /* primary text */
+  --bv-fg-muted: 82 82 82;       /* secondary text */
+  --bv-fg-subtle: 130 130 130;   /* placeholder / meta */
+  --bv-accent: 10 10 10;         /* solid primary button = near-black */
+  --bv-accent-fg: 255 255 255;
+  --bv-ring: 82 82 82;           /* focus ring */
+  --bv-success: 22 101 52;
+  --bv-success-bg: 220 252 231;
+  --bv-warning: 146 64 14;
+  --bv-warning-bg: 254 243 199;
+  --bv-danger: 153 27 27;
+  --bv-danger-bg: 254 226 226;
+  --bv-info: 30 64 175;
+  --bv-info-bg: 219 234 254;
+}
+
+html.dark {
+  color-scheme: dark;
+  --bv-app: 10 10 10;
+  --bv-surface: 20 20 20;
+  --bv-surface-hover: 30 30 30;
+  --bv-elevated: 24 24 24;
+  --bv-border: 38 38 38;
+  --bv-border-strong: 64 64 64;
+  --bv-fg: 245 245 245;
+  --bv-fg-muted: 163 163 163;
+  --bv-fg-subtle: 115 115 115;
+  --bv-accent: 245 245 245;      /* invert: light button on dark */
+  --bv-accent-fg: 10 10 10;
+  --bv-ring: 163 163 163;
+  --bv-success: 134 239 172;
+  --bv-success-bg: 6 78 59;
+  --bv-warning: 253 224 71;
+  --bv-warning-bg: 69 26 3;
+  --bv-danger: 252 165 165;
+  --bv-danger-bg: 69 10 10;
+  --bv-info: 147 197 253;
+  --bv-info-bg: 23 37 84;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  background: rgb(var(--bv-app));
+  color: rgb(var(--bv-fg));
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+}
+
+/* Better default focus ring on interactive elements */
+:where(button, [role='button'], a, input, select, textarea):focus-visible {
+  outline: 2px solid rgb(var(--bv-ring));
+  outline-offset: 2px;
+}

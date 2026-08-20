@@ -1,0 +1,759 @@
+/**
+ * Restore-from-Drive — spec §25, §26, §27.
+ *
+ * Rebuilds the entire local business (IndexedDB + derived caches) from the
+ * customer's Drive folder alone. Runs entirely off `CustomerStorageProvider`
+ * primitives — the same abstraction the app writes through — so any provider
+ * (Google Drive, Local Folder, future OneDrive/S3) can drive it.
+ *
+ * Pipeline:
+ *   1. connect provider (caller supplies ProviderConfig)
+ *   2. locate BusinessVault → let caller pick if multiple businesses exist
+ *   3. read + validate manifest.json (schemaVersion, businessId)
+ *   4. verifyIntegrity — abort with "Backup integrity verification failed"
+ *      on any hash/checksum mismatch (spec §7)
+ *   5. load latest verified snapshot → parseCsv → migrate to current schema
+ *      → bulk-insert into Dexie in ONE transaction (all-or-nothing)
+ *   6. replay journal events after snapshot's checkpoint, idempotent handlers
+ *   7. rebuild derived caches (item_stock qty; invoice paid/balance)
+ *   8. accountingSelfCheck + verifyInventoryIdentity + GST reconciliation
+ *   9. emit RECOVERY_DIAGNOSTIC_REPORT on any inconsistency — never silently
+ *      modify accounting records
+ */
+import type { BusinessVaultDB } from '../db/database';
+import type {
+  CustomerStorageProvider,
+  ProviderConfig,
+  SnapshotHandle,
+  SnapshotIndex,
+  SyncEvent,
+} from '../storage/CustomerStorageProvider';
+import { LocalFolderStorageProvider } from '../storage/LocalFolderStorageProvider';
+import { parseCsv } from '../csv/csvCodec';
+import {
+  CURRENT_SCHEMA_VERSION,
+  UnsupportedSchemaError,
+  migrateSnapshot,
+  type SnapshotTables,
+} from '../db/migrations/index';
+import {
+  TABLE_SPECS,
+  findTableSpecByFile,
+  coerceRow,
+  type TableSpec,
+} from './tableSchema';
+import { applyEvent } from './eventHandlers';
+import {
+  makeDiagnosticReport,
+  renderDiagnosticReport,
+  type DiagnosticIssue,
+  type RecoveryDiagnosticReport,
+} from './diagnosticReport';
+import { accountingSelfCheck } from '../domain/AccountingService';
+import { InventoryService } from '../domain/InventoryService';
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export interface DiscoveredBusiness {
+  businessId: string;
+  businessName: string;
+  folderPath: string;
+  schemaVersion: number;
+  lastSnapshotAsOf?: string;
+}
+
+export interface BusinessPickerContext {
+  businesses: DiscoveredBusiness[];
+}
+
+export type BusinessPicker = (
+  ctx: BusinessPickerContext,
+) => Promise<DiscoveredBusiness>;
+
+export interface RebuildOptions {
+  db: BusinessVaultDB;
+  providerConfig: ProviderConfig;
+  /**
+   * Called when more than one business is found under BusinessVault/. Not
+   * called when exactly one is present.
+   */
+  pickBusiness?: BusinessPicker;
+  /** Test hook — inject a pre-connected provider instead of opening a new one. */
+  preConnectedProvider?: CustomerStorageProvider;
+  /** Called with the current step description for UI progress. */
+  onProgress?: (step: string, pct?: number) => void;
+}
+
+export interface RestoreReport {
+  businessId: string;
+  businessName: string;
+  folderPath: string;
+  schemaVersion: number;
+  migratedFrom?: number;
+  snapshotUsed?: SnapshotHandle;
+  counts: Record<string, number>;
+  eventsReplayed: number;
+  unhandledEvents: number;
+  checksumsOk: boolean;
+  accountingBalanced: boolean;
+  inventoryConsistent: boolean;
+  gstReconciled: boolean;
+  diagnostics: RecoveryDiagnosticReport;
+}
+
+export class BackupIntegrityError extends Error {
+  constructor(
+    message: string,
+    public readonly detail: unknown,
+  ) {
+    super(message);
+    this.name = 'BackupIntegrityError';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Implementation
+// ---------------------------------------------------------------------------
+
+export async function rebuildFromDrive(
+  provider: CustomerStorageProvider,
+  opts: RebuildOptions,
+): Promise<RestoreReport> {
+  const progress = opts.onProgress ?? (() => undefined);
+
+  // 1. connect
+  progress('Connecting to storage provider', 5);
+  if (!opts.preConnectedProvider) {
+    await provider.connect(opts.providerConfig);
+  }
+
+  // 2. locate BusinessVault and pick a business
+  progress('Locating BusinessVault folder', 10);
+  const businesses = await discoverBusinesses(provider);
+  if (businesses.length === 0) {
+    throw new Error('No BusinessVault/<business> folder found on the provider');
+  }
+  let selected: DiscoveredBusiness;
+  if (businesses.length === 1) {
+    selected = businesses[0];
+  } else {
+    if (!opts.pickBusiness) {
+      throw new Error(
+        `Multiple businesses found (${businesses.length}); pickBusiness callback required`,
+      );
+    }
+    selected = await opts.pickBusiness({ businesses });
+  }
+
+  // Bind the provider to the selected business so subsequent journal/snapshot
+  // reads know which folder to look in.
+  await provider.initializeBusiness({
+    businessId: selected.businessId,
+    businessName: selected.businessName,
+  });
+
+  // 3. read + validate manifest
+  progress('Reading manifest', 15);
+  const manifest = await readManifest(provider, selected);
+  const foundSchema = Number(manifest.schemaVersion ?? selected.schemaVersion ?? 0);
+  if (foundSchema > CURRENT_SCHEMA_VERSION) {
+    throw new UnsupportedSchemaError(foundSchema, CURRENT_SCHEMA_VERSION);
+  }
+
+  // 4. checksum verification (spec §7)
+  progress('Verifying backup integrity', 25);
+  const integrity = await provider.verifyIntegrity();
+  const checksumsOk = integrity.ok;
+  if (!checksumsOk) {
+    throw new BackupIntegrityError(
+      'Backup integrity verification failed',
+      integrity.issues,
+    );
+  }
+
+  // 5. pick + load the latest verified snapshot
+  progress('Loading latest snapshot', 40);
+  const snapshotIndex = await pickLatestVerifiedSnapshot(provider);
+  let snapshotTables: SnapshotTables = emptyTables();
+  let snapshotHandle: SnapshotHandle | undefined;
+  let migratedFrom: number | undefined;
+  if (snapshotIndex) {
+    snapshotHandle = snapshotIndex.handle;
+    const snap = await provider.readSnapshot(snapshotHandle);
+    // Cross-verify each CSV file's declared sha256 against the reader's
+    // reported sha256. readSnapshot recomputes on read; if the manifest was
+    // corrupted this would already have been caught by verifyIntegrity, but
+    // belt-and-braces: any mismatch here is fatal.
+    for (const f of snap.files) {
+      const expected = snap.checksums[f.name];
+      if (expected && expected !== f.sha256) {
+        throw new BackupIntegrityError(
+          'Backup integrity verification failed',
+          { file: f.name, expected, actual: f.sha256 },
+        );
+      }
+    }
+    const parsedTables = await parseSnapshotFiles(snap.files);
+    const snapSchema = Number(snap.manifest.schemaVersion ?? foundSchema);
+    if (snapSchema > CURRENT_SCHEMA_VERSION) {
+      throw new UnsupportedSchemaError(snapSchema, CURRENT_SCHEMA_VERSION);
+    }
+    if (snapSchema < CURRENT_SCHEMA_VERSION) {
+      const migrated = migrateSnapshot(
+        parsedTables,
+        snapSchema,
+        CURRENT_SCHEMA_VERSION,
+      );
+      snapshotTables = migrated.tables;
+      migratedFrom = snapSchema;
+    } else {
+      snapshotTables = parsedTables;
+    }
+  }
+
+  // Bulk-insert snapshot into Dexie under ONE transaction. If anything throws,
+  // Dexie rolls back leaving the database in its pre-restore state (which
+  // rebuildFromDrive already cleared at the head of the transaction — so on
+  // failure the DB is empty and the caller can retry).
+  progress('Rebuilding local database', 55);
+  await opts.db.transaction(
+    'rw',
+    tableNames(),
+    async () => {
+      for (const spec of TABLE_SPECS) {
+        // Clear + repopulate each table. Even if the snapshot lacks the file
+        // we clear — restore is a full replacement.
+        const table = (opts.db as unknown as Record<string, {
+          clear(): Promise<void>;
+          bulkPut(rows: unknown[]): Promise<unknown>;
+        }>)[spec.store];
+        if (!table) continue;
+        await table.clear();
+        const rows = snapshotTables[spec.store];
+        if (rows && rows.length > 0) {
+          await table.bulkPut(rows);
+        }
+      }
+      // Truncate the sync_events store too — restore starts a fresh journal.
+      await opts.db.sync_events.clear();
+    },
+  );
+
+  // 6. replay journal events after the snapshot's checkpoint
+  progress('Replaying journal events', 70);
+  const sinceEventId =
+    (manifest.journalCheckpoint as string | undefined) ?? undefined;
+  const events = await provider.readJournalEvents({
+    businessId: selected.businessId,
+    sinceEventId,
+  });
+
+  const diagnostics: string[] = [];
+  let replayed = 0;
+  let unhandled = 0;
+
+  await opts.db.transaction(
+    'rw',
+    tableNames(),
+    async () => {
+      for (const evt of events) {
+        try {
+          const result = await applyEvent(evt, {
+            db: opts.db,
+            businessId: selected.businessId,
+            diagnostics,
+          });
+          if (result === 'applied') replayed++;
+          else unhandled++;
+        } catch (err) {
+          diagnostics.push(
+            `event ${evt.event_id} (${evt.entity_type}:${evt.operation}) failed: ${(err as Error).message}`,
+          );
+        }
+      }
+    },
+  );
+
+  // 7. rebuild derived caches
+  progress('Rebuilding derived tables', 80);
+  await rebuildItemStockFromMovements(opts.db, selected.businessId);
+  await rebuildInvoicePaidBalance(opts.db, selected.businessId);
+
+  // 8. run validators (spec §27)
+  progress('Verifying accounting and inventory', 90);
+  const issues: DiagnosticIssue[] = [];
+  for (const d of diagnostics) {
+    issues.push({ severity: 'warning', code: 'REPLAY_WARNING', message: d });
+  }
+
+  const acct = await accountingSelfCheck(selected.businessId, { db: opts.db });
+  const accountingBalanced = acct.debitsEqCredits && acct.unbalancedEntries.length === 0;
+  if (!accountingBalanced) {
+    issues.push({
+      severity: 'error',
+      code: 'ACCOUNTING_UNBALANCED',
+      message:
+        'SUM(debits) != SUM(credits) after restore. Never silently modify accounting records.',
+      detail: {
+        totalDebits: acct.totalDebits,
+        totalCredits: acct.totalCredits,
+        unbalancedEntries: acct.unbalancedEntries.slice(0, 20),
+      },
+    });
+  }
+
+  const inv = new InventoryService({ db: opts.db });
+  const identity = await inv.verifyInventoryIdentity(selected.businessId);
+  const inventoryConsistent = identity.ok;
+  if (!inventoryConsistent) {
+    issues.push({
+      severity: 'error',
+      code: 'INVENTORY_IDENTITY_BROKEN',
+      message:
+        'opening + purchases + sales_returns - sales - purchase_returns ± adjustments != current stock.',
+      detail: { mismatches: identity.mismatches.slice(0, 20) },
+    });
+  }
+
+  const gst = await gstReconciliation(opts.db, selected.businessId);
+  const gstReconciled = gst.ok;
+  if (!gstReconciled) {
+    issues.push({
+      severity: 'error',
+      code: 'GST_MISMATCH',
+      message: 'Invoice-line GST totals do not sum to invoice header GST totals.',
+      detail: gst.detail,
+    });
+  }
+
+  // 9. counts + report
+  const counts = await countTables(opts.db, selected.businessId);
+  const report = makeDiagnosticReport({
+    businessId: selected.businessId,
+    counts,
+    issues,
+  });
+
+  progress('Restore complete', 100);
+
+  return {
+    businessId: selected.businessId,
+    businessName: selected.businessName,
+    folderPath: selected.folderPath,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    migratedFrom,
+    snapshotUsed: snapshotHandle,
+    counts,
+    eventsReplayed: replayed,
+    unhandledEvents: unhandled,
+    checksumsOk,
+    accountingBalanced,
+    inventoryConsistent,
+    gstReconciled,
+    diagnostics: report,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function tableNames(): string[] {
+  return [
+    'businesses',
+    'customers',
+    'suppliers',
+    'categories',
+    'units',
+    'warehouses',
+    'items',
+    'item_stock',
+    'invoices',
+    'invoice_lines',
+    'purchases',
+    'purchase_lines',
+    'payments',
+    'expenses',
+    'stock_movements',
+    'accounts',
+    'journal_entries',
+    'journal_lines',
+    'sync_events',
+  ];
+}
+
+function emptyTables(): SnapshotTables {
+  const t: SnapshotTables = {};
+  for (const spec of TABLE_SPECS) t[spec.store] = [];
+  return t;
+}
+
+async function parseSnapshotFiles(
+  files: Array<{ name: string; content: Blob }>,
+): Promise<SnapshotTables> {
+  const out: SnapshotTables = emptyTables();
+  for (const f of files) {
+    const spec = findTableSpecByFile(f.name);
+    if (!spec) continue; // unknown file — snapshot is a superset of what we import
+    const text = await blobToText(f.content);
+    const parsed = parseCsv(text);
+    const rows: Record<string, unknown>[] = [];
+    for (const raw of parsed.rows) {
+      rows.push(coerceRow(raw, spec));
+    }
+    out[spec.store] = rows;
+  }
+  return out;
+}
+
+async function blobToText(blob: Blob): Promise<string> {
+  const anyBlob = blob as unknown as {
+    text?: () => Promise<string>;
+    arrayBuffer?: () => Promise<ArrayBuffer>;
+  };
+  if (typeof anyBlob.text === 'function') return anyBlob.text();
+  if (typeof anyBlob.arrayBuffer === 'function') {
+    const ab = await anyBlob.arrayBuffer();
+    return new TextDecoder('utf-8').decode(new Uint8Array(ab));
+  }
+  if (typeof Response !== 'undefined') {
+    return await new Response(blob).text();
+  }
+  throw new Error('blobToText: no way to read Blob in this environment');
+}
+
+interface ManifestShape {
+  businessId?: string;
+  businessName?: string;
+  schemaVersion?: number;
+  journalCheckpoint?: string;
+  [k: string]: unknown;
+}
+
+async function readManifest(
+  provider: CustomerStorageProvider,
+  business: DiscoveredBusiness,
+): Promise<ManifestShape> {
+  // The provider interface doesn't expose an arbitrary-file read (by design —
+  // it should not resemble a filesystem). Use the LocalFolderStorageProvider
+  // escape hatch when available; for real providers, snapshot manifests carry
+  // the same info so we fall back to that.
+  const anyProvider = provider as unknown as {
+    _fsForTests?: () => {
+      readFileText(p: string): Promise<string>;
+      exists(p: string): Promise<boolean>;
+    };
+  };
+  if (typeof anyProvider._fsForTests === 'function') {
+    const fs = anyProvider._fsForTests();
+    const p = `${business.folderPath}/metadata/manifest.json`;
+    if (await fs.exists(p)) {
+      try {
+        return JSON.parse(await fs.readFileText(p)) as ManifestShape;
+      } catch (err) {
+        throw new BackupIntegrityError(
+          'Backup integrity verification failed',
+          { where: 'manifest.json', message: (err as Error).message },
+        );
+      }
+    }
+  }
+  // Fallback: rely on discovery-time schemaVersion. journalCheckpoint left
+  // undefined → replay from the very first event.
+  return {
+    businessId: business.businessId,
+    businessName: business.businessName,
+    schemaVersion: business.schemaVersion,
+  };
+}
+
+async function discoverBusinesses(
+  provider: CustomerStorageProvider,
+): Promise<DiscoveredBusiness[]> {
+  // For LocalFolderStorageProvider we can read BusinessVault/ directly.
+  // For real Drive providers, a real implementation would use provider.listBusinesses
+  // (not yet in the interface; §32 stub). In the current milestone we support
+  // LocalFolder + a single-business fast path where the provider already knows
+  // its business via prior initializeBusiness.
+  const anyProvider = provider as unknown as {
+    _fsForTests?: () => {
+      list(p: string): Promise<Array<{ name: string; kind: 'file' | 'directory' }>>;
+      readFileText(p: string): Promise<string>;
+      exists(p: string): Promise<boolean>;
+    };
+  };
+  if (typeof anyProvider._fsForTests === 'function') {
+    const fs = anyProvider._fsForTests();
+    // Support two folder shapes:
+    //   (a) user picked the PARENT of BusinessVault — entries live under BusinessVault/<name>
+    //   (b) user picked BusinessVault itself — entries live under <name>
+    // Try (a) first (canonical), fall back to (b).
+    const candidates: Array<{ base: string; entries: Array<{ name: string; kind: 'file' | 'directory' }> }> = [];
+    if (await fs.exists('BusinessVault')) {
+      candidates.push({ base: 'BusinessVault', entries: await fs.list('BusinessVault') });
+    }
+    candidates.push({ base: '', entries: await fs.list('') });
+    const out: DiscoveredBusiness[] = [];
+    const seen = new Set<string>();
+    for (const cand of candidates) {
+      for (const e of cand.entries) {
+        if (e.kind !== 'directory') continue;
+        const folderPath = cand.base ? `${cand.base}/${e.name}` : e.name;
+        if (seen.has(folderPath)) continue;
+        const manifestPath = `${folderPath}/metadata/manifest.json`;
+        if (!(await fs.exists(manifestPath))) continue;
+        let manifest: ManifestShape;
+        try {
+          manifest = JSON.parse(await fs.readFileText(manifestPath));
+        } catch {
+          continue;
+        }
+        seen.add(folderPath);
+        out.push({
+          businessId: String(manifest.businessId ?? e.name),
+          businessName: String(manifest.businessName ?? e.name),
+          folderPath,
+          schemaVersion: Number(manifest.schemaVersion ?? 1),
+        });
+      }
+      if (out.length > 0) return out;
+    }
+    return out;
+  }
+  // No discovery hook — assume the provider was already bound to a single
+  // business via connect(); ask connectionStatus.
+  const s = await provider.connectionStatus();
+  if (s.state === 'CONNECTED' && s.folderPath) {
+    const name = s.folderPath.replace(/^BusinessVault\//, '');
+    return [
+      {
+        businessId: name,
+        businessName: name,
+        folderPath: s.folderPath,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+      },
+    ];
+  }
+  return [];
+}
+
+async function pickLatestVerifiedSnapshot(
+  provider: CustomerStorageProvider,
+): Promise<SnapshotIndex | undefined> {
+  // Prefer daily → monthly → annual → ondemand, most recent asOf wins overall.
+  // (Daily snapshots are always the most recent per spec §13.)
+  const kinds = ['daily', 'monthly', 'annual', 'ondemand'] as const;
+  let best: SnapshotIndex | undefined;
+  for (const kind of kinds) {
+    const list = await provider.listSnapshots({ kind });
+    for (const s of list) {
+      if (!s.verified) continue;
+      if (!best || s.handle.asOf > best.handle.asOf) best = s;
+    }
+  }
+  return best;
+}
+
+async function rebuildItemStockFromMovements(
+  db: BusinessVaultDB,
+  businessId: string,
+): Promise<void> {
+  const movements = await db.stock_movements
+    .filter((m) => m.business_id === businessId)
+    .toArray();
+  // Sum qty per (item, warehouse). Cost = last non-zero unit_cost_paise seen.
+  const byKey = new Map<string, {
+    item_id: string;
+    warehouse_id: string;
+    qty_micros: number;
+    avg_cost_paise: number;
+  }>();
+  for (const m of movements) {
+    const key = `${businessId}:${m.item_id}:${m.warehouse_id}`;
+    const cur = byKey.get(key) ?? {
+      item_id: m.item_id,
+      warehouse_id: m.warehouse_id,
+      qty_micros: 0,
+      avg_cost_paise: 0,
+    };
+    cur.qty_micros += m.qty_micros;
+    if (m.unit_cost_paise > 0) cur.avg_cost_paise = m.unit_cost_paise;
+    byKey.set(key, cur);
+  }
+  const now = new Date().toISOString();
+  await db.transaction('rw', db.item_stock, async () => {
+    for (const [key, v] of byKey.entries()) {
+      await db.item_stock.put({
+        id: key,
+        business_id: businessId,
+        item_id: v.item_id,
+        warehouse_id: v.warehouse_id,
+        qty_micros: v.qty_micros,
+        avg_cost_paise: v.avg_cost_paise,
+        updated_at: now,
+      });
+    }
+  });
+}
+
+async function rebuildInvoicePaidBalance(
+  db: BusinessVaultDB,
+  businessId: string,
+): Promise<void> {
+  const invoices = await db.invoices
+    .where('business_id')
+    .equals(businessId)
+    .toArray();
+  const payments = await db.payments
+    .where('business_id')
+    .equals(businessId)
+    .toArray();
+
+  const paidByInvoice = new Map<string, number>();
+  for (const p of payments) {
+    if (p.direction !== 'in') continue;
+    const allocs = Array.isArray(p.allocations) ? p.allocations : [];
+    for (const a of allocs) {
+      if (!a.invoice_id) continue;
+      paidByInvoice.set(
+        a.invoice_id,
+        (paidByInvoice.get(a.invoice_id) ?? 0) + a.amount_paise,
+      );
+    }
+  }
+
+  await db.transaction('rw', db.invoices, async () => {
+    for (const inv of invoices) {
+      const paid = paidByInvoice.get(inv.id) ?? 0;
+      const balance = inv.total_paise - paid;
+      let status = inv.status;
+      if (status !== 'cancelled') {
+        if (paid <= 0) status = 'issued';
+        else if (paid >= inv.total_paise) status = 'paid';
+        else status = 'partial';
+      }
+      await db.invoices.put({
+        ...inv,
+        paid_paise: paid,
+        balance_paise: balance,
+        status,
+      });
+    }
+  });
+}
+
+interface GstResult {
+  ok: boolean;
+  detail: Record<string, unknown>;
+}
+
+async function gstReconciliation(
+  db: BusinessVaultDB,
+  businessId: string,
+): Promise<GstResult> {
+  const invoices = await db.invoices
+    .where('business_id')
+    .equals(businessId)
+    .toArray();
+  const lines = await db.invoice_lines
+    .where('business_id')
+    .equals(businessId)
+    .toArray();
+
+  const linesByInvoice = new Map<string, typeof lines>();
+  for (const l of lines) {
+    const list = linesByInvoice.get(l.invoice_id) ?? [];
+    list.push(l);
+    linesByInvoice.set(l.invoice_id, list);
+  }
+
+  const mismatches: Array<{
+    invoice_id: string;
+    field: string;
+    header: number;
+    lines: number;
+  }> = [];
+
+  for (const inv of invoices) {
+    if (inv.status === 'cancelled') continue;
+    const l = linesByInvoice.get(inv.id) ?? [];
+    const sumTaxable = l.reduce((s, x) => s + x.taxable_paise, 0);
+    const sumCgst = l.reduce((s, x) => s + x.cgst_paise, 0);
+    const sumSgst = l.reduce((s, x) => s + x.sgst_paise, 0);
+    const sumIgst = l.reduce((s, x) => s + x.igst_paise, 0);
+    if (l.length > 0) {
+      if (sumTaxable !== inv.taxable_paise) {
+        mismatches.push({
+          invoice_id: inv.id,
+          field: 'taxable_paise',
+          header: inv.taxable_paise,
+          lines: sumTaxable,
+        });
+      }
+      if (sumCgst !== inv.cgst_paise) {
+        mismatches.push({
+          invoice_id: inv.id,
+          field: 'cgst_paise',
+          header: inv.cgst_paise,
+          lines: sumCgst,
+        });
+      }
+      if (sumSgst !== inv.sgst_paise) {
+        mismatches.push({
+          invoice_id: inv.id,
+          field: 'sgst_paise',
+          header: inv.sgst_paise,
+          lines: sumSgst,
+        });
+      }
+      if (sumIgst !== inv.igst_paise) {
+        mismatches.push({
+          invoice_id: inv.id,
+          field: 'igst_paise',
+          header: inv.igst_paise,
+          lines: sumIgst,
+        });
+      }
+    }
+  }
+
+  return {
+    ok: mismatches.length === 0,
+    detail: { mismatches: mismatches.slice(0, 20), total: mismatches.length },
+  };
+}
+
+async function countTables(
+  db: BusinessVaultDB,
+  businessId: string,
+): Promise<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  for (const spec of TABLE_SPECS) {
+    const table = (db as unknown as Record<string, {
+      where(k: string): { equals(v: unknown): { count(): Promise<number> } };
+    }>)[spec.store];
+    if (!table) {
+      counts[spec.store] = 0;
+      continue;
+    }
+    if (spec.store === 'businesses') {
+      counts[spec.store] = await db.businesses.count();
+    } else {
+      counts[spec.store] = await table
+        .where('business_id')
+        .equals(businessId)
+        .count();
+    }
+  }
+  return counts;
+}
+
+// ---------------------------------------------------------------------------
+// Re-exports for callers
+// ---------------------------------------------------------------------------
+
+export { LocalFolderStorageProvider };
+export { renderDiagnosticReport };
+export type { SyncEvent, TableSpec };

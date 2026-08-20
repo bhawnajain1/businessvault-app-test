@@ -1,0 +1,428 @@
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { db } from '../../db';
+import type { Business } from '../../db/types';
+import { currentBusinessId } from '../../lib/business';
+import { INDIAN_STATES, findStateByCode, stateFromGstin } from '../../lib/indianStates';
+import { seedDefaultMasters } from '../../domain/defaults';
+import { seedChartOfAccounts } from '../../domain/coa';
+import { appendSyncEvent } from '../../domain/syncEventLog';
+import { getDeviceId } from '../../lib/device';
+import { exportLogsAsJsonl, log } from '../../lib/log';
+
+interface Counts {
+  units: number;
+  categories: number;
+  warehouses: number;
+  customers: number;
+  suppliers: number;
+  items: number;
+  invoices: number;
+  accounts: number;
+}
+
+export default function Settings() {
+  const [business, setBusiness] = useState<Business | null>(null);
+  const [form, setForm] = useState<Partial<Business>>({});
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [counts, setCounts] = useState<Counts | null>(null);
+  const [seedError, setSeedError] = useState<string | null>(null);
+
+  async function loadCounts(businessId: string) {
+    const [units, categories, warehouses, customers, suppliers, items, invoices, accounts] =
+      await Promise.all([
+        db.units.where('business_id').equals(businessId).count(),
+        db.categories.where('business_id').equals(businessId).count(),
+        db.warehouses.where('business_id').equals(businessId).count(),
+        db.customers.where('business_id').equals(businessId).count(),
+        db.suppliers.where('business_id').equals(businessId).count(),
+        db.items.where('business_id').equals(businessId).count(),
+        db.invoices.where('business_id').equals(businessId).count(),
+        db.accounts.where('business_id').equals(businessId).count(),
+      ]);
+    setCounts({ units, categories, warehouses, customers, suppliers, items, invoices, accounts });
+  }
+
+  useEffect(() => {
+    (async () => {
+      let b: Business | null = null;
+      try {
+        const id = await currentBusinessId();
+        b = (await db.businesses.get(id)) ?? null;
+      } catch {
+        b = null;
+      }
+      setBusiness(b);
+      if (b) {
+        setForm(b);
+        await loadCounts(b.id);
+      }
+    })();
+  }, []);
+
+  async function save() {
+    if (!business) return;
+    setSaving(true);
+    setSaved(false);
+    try {
+      const patched: Business = {
+        ...business,
+        ...form,
+        updated_at: new Date().toISOString(),
+        entity_version: (business.entity_version ?? 0) + 1,
+      };
+      const deviceId = await getDeviceId();
+      await db.transaction(
+        'rw',
+        [db.businesses, db.sync_events],
+        async () => {
+          await db.businesses.put(patched);
+          await appendSyncEvent(db, {
+            businessId: patched.id,
+            deviceId,
+            entityType: 'business',
+            entityId: patched.id,
+            operation: 'updated',
+            payload: patched,
+            timestamp: patched.updated_at,
+          });
+        },
+      );
+      setBusiness(patched);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function seedMasters() {
+    if (!business) return;
+    setSeedError(null);
+    try {
+      await seedDefaultMasters(business.id);
+      await loadCounts(business.id);
+    } catch (e) {
+      setSeedError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  const [repairMsg, setRepairMsg] = useState<string | null>(null);
+  async function repairChartOfAccounts() {
+    if (!business) return;
+    setRepairMsg(null);
+    try {
+      const before = await db.accounts.where('business_id').equals(business.id).count();
+      await seedChartOfAccounts(business.id);
+      const after = await db.accounts.where('business_id').equals(business.id).count();
+      const added = after - before;
+      setRepairMsg(
+        added === 0
+          ? 'Chart of accounts already complete — nothing to add.'
+          : `Added ${added} missing system account${added === 1 ? '' : 's'}.`,
+      );
+      await loadCounts(business.id);
+    } catch (e) {
+      setRepairMsg(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  async function downloadLogs(hours: number): Promise<void> {
+    try {
+      log.info('settings', 'user requested log export', { hours });
+      const jsonl = await exportLogsAsJsonl(hours * 60 * 60 * 1000);
+      const blob = new Blob([jsonl], { type: 'application/x-ndjson' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      a.href = url;
+      a.download = `businessvault-debug-${stamp}.jsonl`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      log.error('settings', 'log export failed', { error: e });
+    }
+  }
+
+  if (!business) {
+    return (
+      <div className="p-6 text-slate-600">
+        <p>No business found. Complete onboarding first.</p>
+        <Link
+          to="/onboarding"
+          className="mt-3 inline-block rounded bg-slate-900 px-4 py-2 text-sm text-white"
+        >
+          Go to onboarding
+        </Link>
+      </div>
+    );
+  }
+
+  const set = <K extends keyof Business>(k: K, v: Business[K]) =>
+    setForm((f) => ({ ...f, [k]: v }));
+
+  return (
+    <div className="p-6 max-w-3xl flex flex-col gap-6">
+      <h1 className="text-xl font-semibold">Settings</h1>
+
+      <section className="border border-slate-200 rounded p-4 bg-white">
+        <h2 className="text-sm font-semibold text-slate-700 mb-3">Business profile</h2>
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <label className="col-span-2">
+            <span className="block text-slate-700 mb-1">Business name</span>
+            <input
+              value={form.name ?? ''}
+              onChange={(e) => set('name', e.target.value)}
+              className="w-full border border-slate-300 rounded px-2 py-1.5"
+            />
+          </label>
+          <label className="col-span-2">
+            <span className="block text-slate-700 mb-1">Legal name</span>
+            <input
+              value={form.legal_name ?? ''}
+              onChange={(e) => set('legal_name', e.target.value)}
+              className="w-full border border-slate-300 rounded px-2 py-1.5"
+            />
+          </label>
+          <label className="col-span-2">
+            <span className="block text-slate-700 mb-1">GSTIN</span>
+            <input
+              value={form.gstin ?? ''}
+              onChange={(e) => {
+                const g = e.target.value.toUpperCase();
+                const derived = stateFromGstin(g);
+                if (derived) {
+                  setForm((f) => ({
+                    ...f,
+                    gstin: g,
+                    state: derived.name,
+                    state_code: derived.code,
+                  }));
+                } else {
+                  set('gstin', g);
+                }
+              }}
+              placeholder="15-char GSTIN"
+              className="w-full border border-slate-300 rounded px-2 py-1.5 uppercase"
+            />
+          </label>
+          <label>
+            <span className="block text-slate-700 mb-1">State</span>
+            <select
+              value={form.state_code ?? ''}
+              onChange={(e) => {
+                const s = findStateByCode(e.target.value);
+                setForm((f) => ({
+                  ...f,
+                  state: s?.name ?? '',
+                  state_code: e.target.value,
+                }));
+              }}
+              className="w-full border border-slate-300 rounded px-2 py-1.5 bg-white"
+            >
+              <option value="">— Select state —</option>
+              {INDIAN_STATES.map((s) => (
+                <option key={s.code} value={s.code}>
+                  {s.code} — {s.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span className="block text-slate-700 mb-1">PAN</span>
+            <input
+              value={form.pan ?? ''}
+              onChange={(e) => set('pan', e.target.value.toUpperCase())}
+              className="w-full border border-slate-300 rounded px-2 py-1.5 uppercase"
+            />
+          </label>
+          <label className="col-span-2">
+            <span className="block text-slate-700 mb-1">Address line 1</span>
+            <input
+              value={form.address_line1 ?? ''}
+              onChange={(e) => set('address_line1', e.target.value)}
+              className="w-full border border-slate-300 rounded px-2 py-1.5"
+            />
+          </label>
+          <label className="col-span-2">
+            <span className="block text-slate-700 mb-1">Address line 2</span>
+            <input
+              value={form.address_line2 ?? ''}
+              onChange={(e) => set('address_line2', e.target.value)}
+              className="w-full border border-slate-300 rounded px-2 py-1.5"
+            />
+          </label>
+          <label>
+            <span className="block text-slate-700 mb-1">City</span>
+            <input
+              value={form.city ?? ''}
+              onChange={(e) => set('city', e.target.value)}
+              className="w-full border border-slate-300 rounded px-2 py-1.5"
+            />
+          </label>
+          <label>
+            <span className="block text-slate-700 mb-1">Pincode</span>
+            <input
+              value={form.pincode ?? ''}
+              onChange={(e) => set('pincode', e.target.value)}
+              className="w-full border border-slate-300 rounded px-2 py-1.5"
+            />
+          </label>
+          <label>
+            <span className="block text-slate-700 mb-1">Phone</span>
+            <input
+              value={form.phone ?? ''}
+              onChange={(e) => set('phone', e.target.value)}
+              className="w-full border border-slate-300 rounded px-2 py-1.5"
+            />
+          </label>
+          <label>
+            <span className="block text-slate-700 mb-1">Email</span>
+            <input
+              value={form.email ?? ''}
+              onChange={(e) => set('email', e.target.value)}
+              className="w-full border border-slate-300 rounded px-2 py-1.5"
+            />
+          </label>
+          <label>
+            <span className="block text-slate-700 mb-1">Invoice prefix</span>
+            <input
+              value={form.invoice_prefix ?? ''}
+              onChange={(e) => set('invoice_prefix', e.target.value)}
+              className="w-full border border-slate-300 rounded px-2 py-1.5"
+            />
+          </label>
+          <label>
+            <span className="block text-slate-700 mb-1">FY start month</span>
+            <select
+              value={form.financial_year_start_month ?? 4}
+              onChange={(e) =>
+                set('financial_year_start_month', Number(e.target.value))
+              }
+              className="w-full border border-slate-300 rounded px-2 py-1.5 bg-white"
+            >
+              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                <option key={m} value={m}>
+                  {new Date(2000, m - 1, 1).toLocaleString('en-IN', { month: 'long' })}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="mt-4 flex items-center gap-3">
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving}
+            className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50"
+          >
+            {saving ? 'Saving…' : 'Save changes'}
+          </button>
+          {saved && <span className="text-sm text-emerald-600">Saved.</span>}
+        </div>
+      </section>
+
+      <section className="border border-slate-200 rounded p-4 bg-white">
+        <h2 className="text-sm font-semibold text-slate-700 mb-3">Master data</h2>
+        {counts && (
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm text-slate-700">
+            <div className="flex justify-between"><dt>Units</dt><dd>{counts.units}</dd></div>
+            <div className="flex justify-between"><dt>Categories</dt><dd>{counts.categories}</dd></div>
+            <div className="flex justify-between"><dt>Warehouses</dt><dd>{counts.warehouses}</dd></div>
+            <div className="flex justify-between"><dt>Customers</dt><dd>{counts.customers}</dd></div>
+            <div className="flex justify-between"><dt>Suppliers</dt><dd>{counts.suppliers}</dd></div>
+            <div className="flex justify-between"><dt>Items</dt><dd>{counts.items}</dd></div>
+            <div className="flex justify-between"><dt>Invoices</dt><dd>{counts.invoices}</dd></div>
+            <div className="flex justify-between"><dt>Accounts (CoA)</dt><dd>{counts.accounts}</dd></div>
+          </dl>
+        )}
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={seedMasters}
+            className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+          >
+            Seed default units / categories / warehouse
+          </button>
+          <button
+            type="button"
+            onClick={repairChartOfAccounts}
+            className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+          >
+            Repair chart of accounts
+          </button>
+        </div>
+        {seedError && <div className="mt-2 text-sm text-rose-600">{seedError}</div>}
+        {repairMsg && (
+          <div
+            className={`mt-2 text-sm ${repairMsg.startsWith('Error') ? 'text-rose-600' : 'text-emerald-600'}`}
+          >
+            {repairMsg}
+          </div>
+        )}
+        <p className="mt-2 text-xs text-slate-500">
+          Both are idempotent — they only add rows that are missing. Existing data is untouched.
+        </p>
+      </section>
+
+      <section className="border border-slate-200 rounded p-4 bg-white">
+        <h2 className="text-sm font-semibold text-slate-700 mb-3">Data & backup</h2>
+        <ul className="text-sm space-y-2">
+          <li>
+            <Link to="/settings/backup" className="text-blue-700 hover:underline">
+              Backup status &amp; Google Drive settings →
+            </Link>
+          </li>
+          <li>
+            <Link to="/restore" className="text-blue-700 hover:underline">
+              Restore business from Drive →
+            </Link>
+          </li>
+        </ul>
+      </section>
+
+      <section className="border border-slate-200 rounded p-4 bg-white">
+        <h2 className="text-sm font-semibold text-slate-700 mb-3">
+          Debug logs
+        </h2>
+        <p className="text-xs text-slate-600 mb-3">
+          The app keeps the last ~5000 log entries locally. When reporting a bug,
+          download the last 24 hours as a JSONL file and attach it.
+        </p>
+        <div className="flex gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => downloadLogs(1)}
+            className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+          >
+            Download last 1 hour
+          </button>
+          <button
+            type="button"
+            onClick={() => downloadLogs(24)}
+            className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+          >
+            Download last 24 hours
+          </button>
+          <button
+            type="button"
+            onClick={() => downloadLogs(24 * 7)}
+            className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+          >
+            Download last 7 days
+          </button>
+        </div>
+      </section>
+
+      <section className="border border-slate-200 rounded p-4 bg-white text-sm text-slate-600">
+        <h2 className="text-sm font-semibold text-slate-700 mb-2">About this device</h2>
+        <div>Business ID: <code className="text-xs">{business.id}</code></div>
+        <div>Schema version: {business.schema_version}</div>
+        <div>Current FY: {business.current_financial_year}</div>
+      </section>
+    </div>
+  );
+}
