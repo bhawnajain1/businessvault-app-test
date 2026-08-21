@@ -4,7 +4,18 @@
 // pass their payloads through `assertNoTokenLeak` before persistence.
 
 import Dexie, { type Table } from 'dexie';
-import type { TokenSet } from './oauth';
+
+// TokenSet mirrors what the GIS token client returns (accessToken + expiresAt
+// wall-clock in ms). Under GIS there is no refresh token; the field is kept
+// optional for callers that still pass one through.
+export interface TokenSet {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: number;
+  tokenType: string;
+  idToken?: string;
+  scope?: string;
+}
 
 export interface DriveTokenRecord {
   businessId: string;

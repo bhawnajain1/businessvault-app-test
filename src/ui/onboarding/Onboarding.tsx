@@ -211,14 +211,15 @@ export default function Onboarding() {
     [],
   );
 
-  // Resume after Google OAuth redirect: URL carries ?connected=drive.
+  // Legacy: old server-flow used a `?connected=drive` (or `?reconnect=1`)
+  // callback URL. Under GIS the popup resolves inline — nothing to resume from
+  // the URL. If a stale link still lands here with those params, strip them so
+  // a refresh doesn't confuse the user, but do NOT auto-connect.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get('connected') === 'drive' && stashed) {
-      // Strip the query so a refresh doesn't loop.
+    if (params.has('connected') || params.has('reconnect')) {
       const cleanUrl = window.location.pathname + window.location.hash;
       window.history.replaceState({}, '', cleanUrl);
-      void runInitialize('google-drive');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -233,10 +234,10 @@ export default function Onboarding() {
         try {
           const needsAuth = await providerNeedsAuth('google-drive');
           if (needsAuth) {
+            // GIS popup: resolves inline once the user consents. If they cancel
+            // the popup, startDriveOAuth throws — surface as error and stay on
+            // this step.
             await beginGoogleOAuth();
-            // Redirect fires. When we come back, the ?connected=drive effect above
-            // takes over.
-            return;
           }
         } catch (err) {
           setConnectError(err instanceof Error ? err.message : String(err));
@@ -352,5 +353,7 @@ async function providerNeedsAuth(choice: StorageChoice): Promise<boolean> {
 
 async function beginGoogleOAuth(): Promise<void> {
   const { startDriveOAuth } = await import('./driveGlue');
-  await startDriveOAuth({ returnTo: '/onboarding?connected=drive' });
+  // Under GIS this opens the account-picker popup and resolves once the user
+  // consents. `returnTo` is unused but preserved for API stability.
+  await startDriveOAuth({ returnTo: '/onboarding' });
 }

@@ -274,8 +274,15 @@ describe('startSyncWorker — offline queueing survives restart', () => {
   });
 });
 
-describe('startSyncWorker — OAuth expired triggers reconnect', () => {
-  it('calls provider.connect on OAUTH_EXPIRED', async () => {
+describe('startSyncWorker — OAuth expired retries via backoff (GIS)', () => {
+  // Under GIS the worker CANNOT call provider.connect on its own — there is no
+  // client secret and no way to open a popup from a background timer. Silent
+  // refresh is handled inside the DriveApiClient. Transient OAUTH_EXPIRED
+  // failures must therefore behave like any other transient error: the job
+  // stays 'pending' and retries via backoff. Explicit DriveNeedsReconnectError
+  // (covered in the next test) is a separate signal that the user must click
+  // Reconnect in Settings.
+  it('does NOT auto-reconnect on OAUTH_EXPIRED; leaves job for retry', async () => {
     const provider = new FakeProvider();
     provider.writeShouldThrow = 'OAUTH_EXPIRED token needs refresh';
     await db.sync_events.bulkAdd([makeEvent()]);
@@ -291,7 +298,33 @@ describe('startSyncWorker — OAuth expired triggers reconnect', () => {
     });
     await handle.tick();
 
-    expect(provider.reconnectCount).toBeGreaterThanOrEqual(1);
+    expect(provider.reconnectCount).toBe(0);
+    const jobs = await db.sync_queue.toArray();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].status).toBe('pending');
+    expect(jobs[0].attempts).toBe(1);
+
+    handle.stop();
+  });
+
+  it('surfaces DriveNeedsReconnectError as pending without reconnecting', async () => {
+    const provider = new FakeProvider();
+    provider.writeShouldThrow =
+      'DriveNeedsReconnectError: Drive needs to be reconnected';
+    await db.sync_events.bulkAdd([makeEvent()]);
+
+    const handle = startSyncWorker({
+      provider,
+      onStateChange: () => {},
+      clock: () => new Date('2026-08-19T12:00:00Z'),
+      rng: () => 0.5,
+      batchWindowMs: 0,
+      isOnline: () => true,
+      autoStart: false,
+    });
+    await handle.tick();
+
+    expect(provider.reconnectCount).toBe(0);
     const jobs = await db.sync_queue.toArray();
     expect(jobs).toHaveLength(1);
     expect(jobs[0].status).toBe('pending');

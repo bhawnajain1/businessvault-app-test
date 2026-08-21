@@ -60,8 +60,10 @@ export interface SyncEvent {
 export interface GoogleDriveProviderConfig {
   kind: 'google-drive';
   clientId: string;
-  clientSecret: string;
-  redirectUri: string;
+  /** Legacy — server-flow only. Not used under GIS; kept optional for old callers. */
+  clientSecret?: string;
+  /** Legacy — server-flow only. Not used under GIS; kept optional for old callers. */
+  redirectUri?: string;
   /** OAuth scope override. Defaults to 'drive.file' per spec — do NOT widen. */
   scope?: 'drive.file';
 }

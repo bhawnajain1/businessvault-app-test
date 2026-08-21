@@ -5,7 +5,7 @@ interface Props {
   onChoose: (
     choice: StorageChoice,
     localFolderHandle?: FileSystemDirectoryHandle,
-  ) => void;
+  ) => void | Promise<void>;
   onBack: () => void;
   error: string | null;
 }
@@ -20,6 +20,7 @@ function pickerAvailable(): boolean {
 
 export default function StepConnectStorage({ onChoose, onBack, error }: Props) {
   const [pickError, setPickError] = useState<string | null>(null);
+  const [driveBusy, setDriveBusy] = useState(false);
 
   // Runs synchronously from the button click so Chrome still has the user
   // gesture and the folder picker can open. Awaiting anything before this is
@@ -65,10 +66,18 @@ export default function StepConnectStorage({ onChoose, onBack, error }: Props) {
 
       <button
         type="button"
-        onClick={() => onChoose('google-drive')}
-        className="mt-8 w-full rounded-lg bg-indigo-600 px-6 py-6 text-lg font-semibold text-white shadow hover:bg-indigo-700"
+        onClick={async () => {
+          setDriveBusy(true);
+          try {
+            await onChoose('google-drive');
+          } finally {
+            setDriveBusy(false);
+          }
+        }}
+        disabled={driveBusy}
+        className="mt-8 w-full rounded-lg bg-indigo-600 px-6 py-6 text-lg font-semibold text-white shadow hover:bg-indigo-700 disabled:opacity-60"
       >
-        Connect Google Drive
+        {driveBusy ? 'Opening Google…' : 'Connect Google Drive'}
       </button>
       <p className="mt-2 text-xs text-slate-500">
         We will create a normal, visible folder called BusinessVault/&lt;your

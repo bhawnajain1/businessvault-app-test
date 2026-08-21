@@ -395,8 +395,6 @@ describe('LocalFolderStorageProvider', () => {
       p.connect({
         kind: 'google-drive',
         clientId: 'x',
-        clientSecret: 'y',
-        redirectUri: 'z',
       }),
     ).rejects.toThrow(/local-folder/);
   });

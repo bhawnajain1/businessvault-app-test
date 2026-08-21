@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { db as defaultDb } from '../../db';
 import { LocalFolderStorageProvider } from '../../storage/LocalFolderStorageProvider';
+import { GoogleDriveStorageProvider } from '../../drive/GoogleDriveStorageProvider';
 import type {
   CustomerStorageProvider,
   ProviderConfig,
@@ -13,6 +14,10 @@ import {
   type RestoreReport,
   type UnshippedEventsSummary,
 } from '../../restore/rebuildFromDrive';
+import { env } from '../../lib/env';
+import { connectDrive } from '../../drive/connectDrive';
+import { createDriveApiClient } from '../../drive/google';
+import { log } from '../../lib/log';
 
 type Step =
   | 'idle'
@@ -30,10 +35,14 @@ interface RestoreWizardProps {
   db?: typeof defaultDb;
 }
 
-// The window.showDirectoryPicker type isn't in lib.dom yet.
+const RESTORE_BUSINESS_ID = 'pending-onboarding';
+
 type DirHandle = FileSystemDirectoryHandle;
 function pickerAvailable(): boolean {
-  return typeof window !== 'undefined' && typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker === 'function';
+  return (
+    typeof window !== 'undefined' &&
+    typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker === 'function'
+  );
 }
 
 async function clearSavedHandle(): Promise<void> {
@@ -49,16 +58,9 @@ export default function RestoreWizard(props: RestoreWizardProps) {
   const [providerKind, setProviderKind] = useState<ProviderKind>('local-folder');
   const [pickedHandle, setPickedHandle] = useState<DirHandle | null>(null);
   const [pickedName, setPickedName] = useState<string>('');
-  const [driveClientId, setDriveClientId] = useState('');
-  const [driveClientSecret, setDriveClientSecret] = useState('');
-  const [driveRedirectUri, setDriveRedirectUri] = useState(
-    typeof window !== 'undefined'
-      ? `${window.location.origin}${import.meta.env.BASE_URL || '/'}oauth/callback`.replace(
-          /\/+oauth\/callback$/,
-          '/oauth/callback',
-        )
-      : '',
-  );
+  const [driveConnecting, setDriveConnecting] = useState(false);
+  const [driveConnectedEmail, setDriveConnectedEmail] = useState<string | null>(null);
+  const [driveError, setDriveError] = useState<string | null>(null);
 
   const [step, setStep] = useState<Step>('idle');
   const [statusMessage, setStatusMessage] = useState('');
@@ -69,7 +71,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
   >(null);
   const [report, setReport] = useState<RestoreReport | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [log, setLog] = useState<string[]>([]);
+  const [log2, setLog] = useState<string[]>([]);
   const [unshipped, setUnshipped] = useState<UnshippedEventsSummary | null>(null);
 
   const db = props.db ?? defaultDb;
@@ -80,17 +82,14 @@ export default function RestoreWizard(props: RestoreWizardProps) {
 
   const providerConfig: ProviderConfig | null = useMemo(() => {
     if (providerKind === 'local-folder') {
-      // rootPath is ignored in the browser (picker/handle drives the FS backend);
-      // required only by the Node/test path.
       return { kind: 'local-folder', rootPath: '' };
     }
     return {
       kind: 'google-drive',
-      clientId: driveClientId,
-      clientSecret: driveClientSecret,
-      redirectUri: driveRedirectUri,
+      clientId: env.googleClientId,
+      scope: 'drive.file',
     };
-  }, [providerKind, driveClientId, driveClientSecret, driveRedirectUri]);
+  }, [providerKind]);
 
   const onChooseFolder = useCallback(async () => {
     setError(null);
@@ -123,11 +122,39 @@ export default function RestoreWizard(props: RestoreWizardProps) {
     appendLog('Cleared saved folder handle.');
   }, [appendLog]);
 
+  const onConnectDrive = useCallback(async () => {
+    setDriveError(null);
+    if (!env.googleClientId) {
+      setDriveError('Google Drive not configured. Set VITE_GOOGLE_CLIENT_ID and reload.');
+      return;
+    }
+    setDriveConnecting(true);
+    try {
+      log.info('restore', 'connecting Google Drive (GIS popup)');
+      const result = await connectDrive({
+        businessId: RESTORE_BUSINESS_ID,
+        prompt: 'select_account',
+      });
+      setDriveConnectedEmail(result.identity.email);
+      appendLog(`Google Drive connected as ${result.identity.email}.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn('restore', 'connectDrive failed', { error: msg });
+      setDriveError(msg);
+    } finally {
+      setDriveConnecting(false);
+    }
+  }, [appendLog]);
+
   const runRestore = useCallback(
     async (confirmDataLoss: boolean) => {
       if (!providerConfig) return;
       if (providerKind === 'local-folder' && !pickedHandle) {
         setError('Choose a folder first.');
+        return;
+      }
+      if (providerKind === 'google-drive' && !driveConnectedEmail) {
+        setError('Connect Google Drive first.');
         return;
       }
 
@@ -140,15 +167,19 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       if (!confirmDataLoss) setLog([]);
       appendLog(confirmDataLoss ? 'Restore restarted with data-loss confirmed.' : 'Restore started.');
 
-      const provider =
-        props.provider ??
-        (providerKind === 'local-folder'
-          ? new LocalFolderStorageProvider()
-          : null);
+      let provider: CustomerStorageProvider | null = props.provider ?? null;
+      if (!provider) {
+        if (providerKind === 'local-folder') {
+          provider = new LocalFolderStorageProvider();
+        } else if (providerKind === 'google-drive') {
+          const api = createDriveApiClient({ businessId: RESTORE_BUSINESS_ID });
+          provider = new GoogleDriveStorageProvider({ driveApi: api });
+        }
+      }
 
       if (!provider) {
         setStep('error');
-        setError('Google Drive provider is not wired in yet in this build.');
+        setError('Provider is not available in this build.');
         return;
       }
 
@@ -194,7 +225,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
         setStep('error');
       }
     },
-    [db, providerConfig, providerKind, props.provider, pickedHandle, appendLog],
+    [db, providerConfig, providerKind, props.provider, pickedHandle, driveConnectedEmail, appendLog],
   );
 
   const onStart = useCallback(() => runRestore(false), [runRestore]);
@@ -273,40 +304,37 @@ export default function RestoreWizard(props: RestoreWizardProps) {
 
           {providerKind === 'google-drive' && (
             <div className="space-y-3">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  OAuth Client ID
-                </label>
-                <input
-                  className="w-full border rounded px-3 py-2 font-mono text-sm"
-                  value={driveClientId}
-                  onChange={(e) => setDriveClientId(e.target.value)}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  OAuth Client Secret
-                </label>
-                <input
-                  type="password"
-                  className="w-full border rounded px-3 py-2 font-mono text-sm"
-                  value={driveClientSecret}
-                  onChange={(e) => setDriveClientSecret(e.target.value)}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Redirect URI
-                </label>
-                <input
-                  className="w-full border rounded px-3 py-2 font-mono text-sm"
-                  value={driveRedirectUri}
-                  onChange={(e) => setDriveRedirectUri(e.target.value)}
-                />
-              </div>
-              <p className="text-xs text-slate-500">
-                Scope is fixed to <code>drive.file</code>.
+              <p className="text-sm text-slate-600">
+                We use Google Sign-In in a popup. No client secret, no
+                redirect URL, no credentials to enter. Scope is fixed to{' '}
+                <code>drive.file</code> — we can only see files this app
+                created.
               </p>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={onConnectDrive}
+                  disabled={driveConnecting}
+                  className="bg-indigo-600 text-white rounded px-4 py-2 hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {driveConnecting
+                    ? 'Opening Google…'
+                    : driveConnectedEmail
+                      ? 'Reconnect Google Drive'
+                      : 'Connect Google Drive'}
+                </button>
+                {driveConnectedEmail && (
+                  <span className="text-sm text-emerald-700">
+                    Connected as{' '}
+                    <span className="font-medium">{driveConnectedEmail}</span>
+                  </span>
+                )}
+              </div>
+              {driveError && (
+                <div className="rounded border border-red-300 bg-red-50 text-red-800 p-2 text-sm">
+                  {driveError}
+                </div>
+              )}
             </div>
           )}
 
@@ -322,8 +350,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
             onClick={onStart}
             disabled={
               (providerKind === 'local-folder' && !pickedHandle) ||
-              (providerKind === 'google-drive' &&
-                (!driveClientId || !driveClientSecret || !driveRedirectUri))
+              (providerKind === 'google-drive' && !driveConnectedEmail)
             }
           >
             Start Restore
@@ -395,9 +422,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           <div className="text-sm text-red-900 space-y-1">
             <div className="font-semibold">Recommended:</div>
             <ol className="list-decimal ml-5 space-y-1">
-              <li>
-                Cancel this restore.
-              </li>
+              <li>Cancel this restore.</li>
               <li>
                 Open Settings → Backup and make sure the backup folder is
                 connected and the sync worker shows "Healthy".
@@ -502,11 +527,11 @@ export default function RestoreWizard(props: RestoreWizardProps) {
         </section>
       )}
 
-      {log.length > 0 && (
+      {log2.length > 0 && (
         <section className="border rounded-lg p-3 bg-slate-50">
           <div className="text-xs font-medium text-slate-600 mb-1">Diagnostics</div>
           <pre className="text-[11px] font-mono text-slate-700 whitespace-pre-wrap max-h-64 overflow-auto">
-            {log.join('\n')}
+            {log2.join('\n')}
           </pre>
         </section>
       )}

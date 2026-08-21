@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   GoogleDriveStorageProvider,
+  DriveNeedsReconnectError,
   type DriveApiClient,
   type DriveFileRef,
 } from './GoogleDriveStorageProvider';
@@ -48,11 +49,10 @@ const MIME_FOLDER = 'application/vnd.google-apps.folder';
 class FakeDrive implements DriveApiClient {
   private idSeq = 0;
   nodes = new Map<string, Node>();
-  private tokens: { accessToken: string; refreshToken: string; expiresAt: number } | null = null;
+  private tokens: { accessToken: string; expiresAt: number } | null = null;
   private user = { emailAddress: 'owner@example.com', displayName: 'Owner' };
   private startToken = '1';
   private changes: Array<{ fileId: string; time: string; removed?: boolean; foreign?: boolean }> = [];
-  redirectedTo: string | null = null;
   /** Fail policy hooks — set to make a specific createFile / update fail. */
   failNextCreate: string[] = [];
   failVerifyFile: string | null = null;
@@ -89,23 +89,19 @@ class FakeDrive implements DriveApiClient {
     };
   }
 
-  // OAuth
-  buildAuthUrl() {
-    return 'https://accounts.google.com/o/oauth2/v2/auth?fake=1';
-  }
-  async exchangeCode() {
-    this.tokens = { accessToken: 'AT', refreshToken: 'RT', expiresAt: Date.now() + 3600_000 };
-    return this.tokens;
-  }
+  // Token management (GIS — no refresh token in the browser).
   async hasValidTokens(): Promise<boolean> {
     return this.tokens !== null;
   }
-  async refreshIfNeeded(): Promise<void> {}
+  async refreshIfNeeded(): Promise<void> {
+    if (!this.tokens) throw new DriveNeedsReconnectError();
+  }
   async getUserInfo() {
+    if (!this.tokens) throw new DriveNeedsReconnectError();
     return this.user;
   }
   seedTokens() {
-    this.tokens = { accessToken: 'AT', refreshToken: 'RT', expiresAt: Date.now() + 3600_000 };
+    this.tokens = { accessToken: 'AT', expiresAt: Date.now() + 3600_000 };
   }
 
   // Folder ops
@@ -231,10 +227,6 @@ class FakeDrive implements DriveApiClient {
     return { changes, newStartPageToken: String(Number(this.startToken) + 1) };
   }
 
-  redirect(url: string): void {
-    this.redirectedTo = url;
-  }
-
   // Test-only helpers
   pathTo(fileId: string): string {
     const parts: string[] = [];
@@ -263,8 +255,6 @@ class FakeDrive implements DriveApiClient {
 const config: GoogleDriveProviderConfig = {
   kind: 'google-drive',
   clientId: 'CID',
-  clientSecret: 'SEC',
-  redirectUri: 'https://app.example/oauth',
 };
 
 function mkEvent(id: string, entityId: string, ts = '2026-08-19T10:00:00.000Z'): SyncEvent {
@@ -300,12 +290,13 @@ async function connected(): Promise<{
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('GoogleDriveStorageProvider — connect / OAuth', () => {
-  it('redirects to auth URL when no tokens exist', async () => {
+describe('GoogleDriveStorageProvider — connect (GIS)', () => {
+  it('throws DriveNeedsReconnectError when no tokens exist', async () => {
     const drive = new FakeDrive();
     const provider = new GoogleDriveStorageProvider({ driveApi: drive });
-    await provider.connect(config);
-    expect(drive.redirectedTo).toContain('accounts.google.com');
+    await expect(provider.connect(config)).rejects.toBeInstanceOf(
+      DriveNeedsReconnectError,
+    );
     const status = await provider.connectionStatus();
     expect(status.state).toBe('DISCONNECTED');
   });
@@ -324,6 +315,7 @@ describe('GoogleDriveStorageProvider — connect / OAuth', () => {
 
   it('rejects non-google-drive configs and non-drive.file scope', async () => {
     const drive = new FakeDrive();
+    drive.seedTokens();
     const provider = new GoogleDriveStorageProvider({ driveApi: drive });
     await expect(
       provider.connect({ kind: 'onedrive', clientId: 'x', clientSecret: 'y', redirectUri: 'z' }),

@@ -313,22 +313,23 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
       const attempts = job.attempts + 1;
       const dead = attempts >= job.max_attempts;
 
-      // Distinguish transient OAuth errors (§30). Provider is expected to
-      // throw either a message containing 'OAUTH_EXPIRED' or 'DISCONNECTED'.
+      // Distinguish OAuth errors (§30). Under GIS the DriveApiClient handles
+      // silent refresh internally; if it throws DriveNeedsReconnectError the
+      // token popup must be re-opened by the user via Settings → Data & Backup
+      // → Reconnect. The worker never auto-connects (no client secret to use).
+      const needsReconnect =
+        /needs to be reconnected|DriveNeedsReconnectError|not connected/i.test(msg);
       const oauth = /OAUTH_EXPIRED|invalid_grant|unauthorized/i.test(msg);
       const disconnected =
-        /DISCONNECTED|permission_revoked|revoked/i.test(msg);
-      if (oauth) {
-        try {
-          await deps.provider.connect(
-            // A no-config reconnect: the provider is expected to consult its
-            // stored refresh token. If it needs UI reauth it will throw
-            // DISCONNECTED and we surface that below.
-            { kind: 'google-drive', clientId: '', clientSecret: '', redirectUri: '' },
-          );
-        } catch {
-          /* fall through to normal failure handling */
-        }
+        needsReconnect || /DISCONNECTED|permission_revoked|revoked/i.test(msg);
+      if (needsReconnect) {
+        log.warn('sync', 'Drive needs reconnect — pausing this job (user must Reconnect)', {
+          jobId: job.id,
+        });
+      } else if (oauth) {
+        log.debug('sync', 'transient oauth failure — retrying via backoff', {
+          jobId: job.id,
+        });
       }
 
       if (dead) {

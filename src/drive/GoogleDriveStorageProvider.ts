@@ -88,26 +88,29 @@ export interface DriveUserInfo {
   displayName?: string;
 }
 
-export interface OAuthTokens {
+// GIS access tokens are short-lived (~1h) and refreshed silently via
+// requestAccessToken({prompt:''}) inside the DriveApiClient itself. There is
+// no refresh_token under the browser-only GIS flow.
+export interface AccessTokenInfo {
   accessToken: string;
-  refreshToken: string;
   expiresAt: number;
 }
 
+// Thrown when connect() finds no stored token AND silent refresh fails.
+// UI catches this to render "Reconnect Google Drive" (Data & Backup, banner).
+export class DriveNeedsReconnectError extends Error {
+  constructor(message: string = 'Google Drive is not connected — call connectDrive() before provider.connect()') {
+    super(message);
+    this.name = 'DriveNeedsReconnectError';
+  }
+}
+
 export interface DriveApiClient {
-  // ---- OAuth ----
-  buildAuthUrl(input: {
-    clientId: string;
-    redirectUri: string;
-    scope: string;
-    state?: string;
-  }): string;
-  exchangeCode(input: {
-    code: string;
-    clientId: string;
-    clientSecret: string;
-    redirectUri: string;
-  }): Promise<OAuthTokens>;
+  // ---- Auth (GIS) ----
+  // The DriveApiClient owns silent-refresh internally. `hasValidTokens` returns
+  // true if a live token exists (or if silent refresh succeeds). Provider.connect
+  // calls this once during boot; every subsequent Drive call retries once on
+  // 401 after a silent refresh, then surfaces DriveNeedsReconnectError.
   hasValidTokens(): Promise<boolean>;
   refreshIfNeeded(): Promise<void>;
   getUserInfo(): Promise<DriveUserInfo>;
@@ -136,10 +139,6 @@ export interface DriveApiClient {
   // ---- Changes API ----
   getStartPageToken(): Promise<string>;
   listChanges(pageToken: string): Promise<DriveChangesPage>;
-
-  /** Redirect the user's browser to the URL (browser-only). Injected so the
-   *  provider itself has no window/document dependency (helps tests). */
-  redirect(url: string): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -348,34 +347,14 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
 
     const hasTokens = await this.api.hasValidTokens();
     if (!hasTokens) {
-      const url = this.api.buildAuthUrl({
-        clientId: config.clientId,
-        redirectUri: config.redirectUri,
-        scope: 'https://www.googleapis.com/auth/drive.file',
-      });
-      // Kick off OAuth. The redirect completes on a page that calls
-      // exchangeCodeAndConnect() below, then re-invokes connect().
-      this.api.redirect(url);
-      return;
+      // Under GIS there is no redirect flow. The UI must call
+      // connectDrive({businessId, prompt: 'consent'}) BEFORE provider.connect
+      // to open the popup and stash tokens. If we reach here without tokens,
+      // the caller needs to route to a Reconnect UI.
+      throw new DriveNeedsReconnectError();
     }
 
     await this.api.refreshIfNeeded();
-    const user = await this.api.getUserInfo();
-    this.account = user.emailAddress;
-    this.connected = true;
-  }
-
-  /** Called by the OAuth redirect landing page. */
-  async exchangeCodeAndConnect(code: string): Promise<void> {
-    if (!this.config || this.config.kind !== 'google-drive') {
-      throw new Error('connect() must be called before exchangeCodeAndConnect()');
-    }
-    await this.api.exchangeCode({
-      code,
-      clientId: this.config.clientId,
-      clientSecret: this.config.clientSecret,
-      redirectUri: this.config.redirectUri,
-    });
     const user = await this.api.getUserInfo();
     this.account = user.emailAddress;
     this.connected = true;
