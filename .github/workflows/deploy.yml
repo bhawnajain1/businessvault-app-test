@@ -33,11 +33,12 @@ jobs:
           # Public build repo is served at /businessvault-app/. Override the
           # default /BusinessVault/ base so asset paths match the new URL.
           BV_BASE: /businessvault-app/
-          # Drive OAuth: empty on the public build so the client secret can't
-          # leak. Local dev with .env is unaffected; sync just stays disabled
-          # on the hosted site until we switch to true PKCE.
-          VITE_GOOGLE_CLIENT_ID: ''
-          VITE_GOOGLE_CLIENT_SECRET: ''
+          # Google Identity Services (browser-only OAuth). The client ID is not
+          # a secret — it's designed to be visible in JS — but we route it
+          # through Actions secrets so it isn't hard-coded in source. The
+          # origin allow-list in Google Cloud Console (Authorized JavaScript
+          # origins) is what actually locks it to this deployment.
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           # Feedback button mailto: target. Kept in a GitHub Actions secret so
           # the address isn't in git history / source (scrapes -> spam). When
           # the secret is unset the Feedback button hides itself at runtime.
