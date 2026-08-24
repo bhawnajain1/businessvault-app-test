@@ -10,6 +10,7 @@ import { adoptConnectedProvider, stopSyncWorker } from '../../sync/bootProvider'
 import { connectDrive } from '../../drive/connectDrive';
 import { buildDriveProvider } from '../onboarding/driveGlue';
 import { hasGoogleClientId } from '../../auth/gis';
+import { log } from '../../lib/log';
 import type {
   ConnectionStatus,
   IntegrityReport,
@@ -185,9 +186,9 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
     }
     const ok = window.confirm(
       `Switch this business's backups to Google Drive?\n\n` +
-        `From now on, new entries and snapshots will go to Drive under ` +
-        `BusinessVault/${business.name}. Files already in your local backup ` +
-        `folder are left as-is — this does not copy them over.`,
+        `Your entire history for this business will be re-uploaded to Drive ` +
+        `under BusinessVault/${business.name} in the background. Files already ` +
+        `in the local backup folder are not touched.`,
     );
     if (!ok) return;
     setBusy('switch');
@@ -212,19 +213,41 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
       // old worker had already claimed (SYNCING) back to QUEUED so the fresh
       // Drive worker re-picks them up — otherwise a mid-flush switch would
       // orphan them.
-      await db.sync_events
+      const syncingRequeued = await db.sync_events
         .where('[business_id+sync_status]')
         .equals([businessId, 'SYNCING'])
         .modify({ sync_status: 'QUEUED' });
-      await db.sync_queue
+      // Re-ship the full pre-switch history to Drive. Rows flagged SYNCED
+      // against the previous provider (typically a busted local-folder
+      // provider that never actually persisted them) still exist only in
+      // IndexedDB. Restore-from-Drive would find an empty journal without
+      // this backfill. Clearing synced_at + journal_file lets the Drive
+      // worker treat them as fresh work.
+      const syncedBackfilled = await db.sync_events
+        .where('[business_id+sync_status]')
+        .equals([businessId, 'SYNCED'])
+        .modify({
+          sync_status: 'QUEUED',
+          synced_at: null,
+          journal_file: null,
+        });
+      const runningRequeued = await db.sync_queue
         .where('[business_id+status]')
         .equals([businessId, 'running'])
         .modify({ status: 'pending' });
+      log.info('backup', 'switch-to-drive backfill', {
+        businessId,
+        syncingRequeued,
+        syncedBackfilled,
+        runningRequeued,
+        driveFolderId: init.providerFolderId,
+        driveEmail: res.identity.email,
+      });
       stopSyncWorker();
       adoptConnectedProvider(provider, businessId);
       setConn(await provider.connectionStatus());
       setMessage(
-        `Switched to Google Drive as ${res.identity.email}. New entries will back up to Drive.`,
+        `Switched to Google Drive as ${res.identity.email}. Your history (${syncedBackfilled} events) is being re-uploaded to Drive — check back in a minute.`,
       );
     } catch (e) {
       setError((e as Error).message);
