@@ -405,11 +405,11 @@ export default function CustomersPage() {
   }
 
   if (loading) {
-    return <div className="p-6 text-slate-500">Loading...</div>;
+    return <div className="p-6 text-fg-muted">Loading...</div>;
   }
   if (!businessId) {
     return (
-      <div className="p-6 text-slate-600">
+      <div className="p-6 text-fg-muted">
         No active business — complete onboarding first.
       </div>
     );

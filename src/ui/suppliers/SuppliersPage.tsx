@@ -234,10 +234,10 @@ export default function SuppliersPage() {
     });
   }
 
-  if (loading) return <div className="p-6 text-slate-500">Loading...</div>;
+  if (loading) return <div className="p-6 text-fg-muted">Loading...</div>;
   if (!businessId) {
     return (
-      <div className="p-6 text-slate-600">
+      <div className="p-6 text-fg-muted">
         No active business — complete onboarding first.
       </div>
     );
@@ -246,11 +246,11 @@ export default function SuppliersPage() {
   return (
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Suppliers</h1>
+        <h1 className="text-xl font-semibold text-fg">Suppliers</h1>
         <button
           type="button"
           onClick={openNew}
-          className="bg-slate-900 text-white text-sm rounded px-3 py-1.5 hover:bg-slate-800"
+          className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90"
         >
           New Supplier
         </button>
@@ -275,7 +275,7 @@ export default function SuppliersPage() {
             <button
               type="button"
               onClick={() => setDrawerOpen(false)}
-              className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+              className="h-8 rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
             >
               Cancel
             </button>
@@ -283,7 +283,7 @@ export default function SuppliersPage() {
               type="button"
               disabled={saving || form.name.trim().length === 0}
               onClick={save}
-              className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50"
+              className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
             >
               {saving ? 'Saving...' : 'Save'}
             </button>
@@ -292,31 +292,31 @@ export default function SuppliersPage() {
       >
         <div className="grid grid-cols-2 gap-3 text-sm">
           <label className="col-span-2">
-            <span className="block text-slate-700 mb-1">Name *</span>
+            <span className="block text-[12px] text-fg-muted mb-1">Name *</span>
             <input
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
-              className="w-full border border-slate-300 rounded px-2 py-1.5"
+              className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
           <label>
-            <span className="block text-slate-700 mb-1">Phone</span>
+            <span className="block text-[12px] text-fg-muted mb-1">Phone</span>
             <input
               value={form.phone}
               onChange={(e) => setForm({ ...form, phone: e.target.value })}
-              className="w-full border border-slate-300 rounded px-2 py-1.5"
+              className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
           <label>
-            <span className="block text-slate-700 mb-1">Email</span>
+            <span className="block text-[12px] text-fg-muted mb-1">Email</span>
             <input
               value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })}
-              className="w-full border border-slate-300 rounded px-2 py-1.5"
+              className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
           <label className="col-span-2">
-            <span className="block text-slate-700 mb-1">GSTIN</span>
+            <span className="block text-[12px] text-fg-muted mb-1">GSTIN</span>
             <input
               value={form.gstin}
               onChange={(e) => {
@@ -329,18 +329,18 @@ export default function SuppliersPage() {
                 }
               }}
               placeholder="15-char GSTIN (state auto-fills from first 2 digits)"
-              className="w-full border border-slate-300 rounded px-2 py-1.5 uppercase"
+              className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle uppercase focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
           <label>
-            <span className="block text-slate-700 mb-1">State</span>
+            <span className="block text-[12px] text-fg-muted mb-1">State</span>
             <select
               value={form.stateCode}
               onChange={(e) => {
                 const s = findStateByCode(e.target.value);
                 setForm({ ...form, state: s?.name ?? '', stateCode: e.target.value });
               }}
-              className="w-full border border-slate-300 rounded px-2 py-1.5 bg-white"
+              className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             >
               <option value="">— Select state —</option>
               {INDIAN_STATES.map((s) => (
@@ -351,39 +351,39 @@ export default function SuppliersPage() {
             </select>
           </label>
           <label>
-            <span className="block text-slate-700 mb-1">State Code</span>
+            <span className="block text-[12px] text-fg-muted mb-1">State Code</span>
             <input
               value={form.stateCode}
               readOnly
               tabIndex={-1}
-              className="w-full border border-slate-200 rounded px-2 py-1.5 bg-slate-50 text-slate-600"
+              className="w-full h-8 rounded-md border border-border bg-app px-2.5 text-[13px] text-fg-muted"
             />
           </label>
           <label className="col-span-2">
-            <span className="block text-slate-700 mb-1">Address</span>
+            <span className="block text-[12px] text-fg-muted mb-1">Address</span>
             <textarea
               value={form.address}
               onChange={(e) => setForm({ ...form, address: e.target.value })}
-              className="w-full border border-slate-300 rounded px-2 py-1.5 h-16"
+              className="w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-[13px] text-fg h-16 focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
           <label>
-            <span className="block text-slate-700 mb-1">Opening Balance (₹)</span>
+            <span className="block text-[12px] text-fg-muted mb-1">Opening Balance (₹)</span>
             <input
               value={form.openingBalanceRupees}
               onChange={(e) => setForm({ ...form, openingBalanceRupees: e.target.value })}
-              className="w-full border border-slate-300 rounded px-2 py-1.5 text-right"
+              className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg text-right focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
           <label className="col-span-2">
-            <span className="block text-slate-700 mb-1">Notes</span>
+            <span className="block text-[12px] text-fg-muted mb-1">Notes</span>
             <textarea
               value={form.notes}
               onChange={(e) => setForm({ ...form, notes: e.target.value })}
-              className="w-full border border-slate-300 rounded px-2 py-1.5 h-16"
+              className="w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-[13px] text-fg h-16 focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
-          <label className="col-span-2 inline-flex items-center gap-2">
+          <label className="col-span-2 inline-flex items-center gap-2 text-[13px] text-fg">
             <input
               type="checkbox"
               checked={form.active}
@@ -393,7 +393,7 @@ export default function SuppliersPage() {
           </label>
         </div>
         {saveError && (
-          <div className="mt-3 text-sm text-rose-600 whitespace-pre-wrap">{saveError}</div>
+          <div className="mt-3 text-sm text-danger whitespace-pre-wrap">{saveError}</div>
         )}
       </Drawer>
     </div>

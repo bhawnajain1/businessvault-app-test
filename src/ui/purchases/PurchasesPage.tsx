@@ -405,10 +405,10 @@ export default function PurchasesPage() {
     }
   }
 
-  if (loading) return <div className="p-6 text-slate-500">Loading...</div>;
+  if (loading) return <div className="p-6 text-fg-muted">Loading...</div>;
   if (!businessId) {
     return (
-      <div className="p-6 text-slate-600">
+      <div className="p-6 text-fg-muted">
         No active business — complete onboarding first.
       </div>
     );
@@ -417,11 +417,11 @@ export default function PurchasesPage() {
   return (
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Purchases</h1>
+        <h1 className="text-xl font-semibold text-fg">Purchases</h1>
         <button
           type="button"
           onClick={openNew}
-          className="bg-slate-900 text-white text-sm rounded px-3 py-1.5 hover:bg-slate-800"
+          className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90"
         >
           New Purchase
         </button>
@@ -431,7 +431,7 @@ export default function PurchasesPage() {
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as PurchaseStatus | '')}
-          className="border border-slate-300 rounded px-2 py-1.5"
+          className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
         >
           <option value="">All statuses</option>
           {STATUSES.map((s) => (
@@ -443,7 +443,7 @@ export default function PurchasesPage() {
         <select
           value={supplierFilter}
           onChange={(e) => setSupplierFilter(e.target.value)}
-          className="border border-slate-300 rounded px-2 py-1.5"
+          className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
         >
           <option value="">All suppliers</option>
           {suppliers.map((s) => (
@@ -452,7 +452,7 @@ export default function PurchasesPage() {
             </option>
           ))}
         </select>
-        <label className="inline-flex items-center gap-1.5 text-slate-600">
+        <label className="inline-flex items-center gap-1.5 text-[13px] text-fg-muted">
           <input
             type="checkbox"
             checked={showVoided}
@@ -480,7 +480,7 @@ export default function PurchasesPage() {
             <button
               type="button"
               onClick={() => setDrawerOpen(false)}
-              className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+              className="h-8 rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
             >
               Cancel
             </button>
@@ -488,7 +488,7 @@ export default function PurchasesPage() {
               type="button"
               disabled={saving || !supplierId || lines.every((l) => !l.itemId)}
               onClick={save}
-              className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50"
+              className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
             >
               {saving ? 'Saving...' : 'Save'}
             </button>
@@ -497,11 +497,11 @@ export default function PurchasesPage() {
       >
         <div className="grid grid-cols-2 gap-3 text-sm">
           <label>
-            <span className="block text-slate-700 mb-1">Supplier *</span>
+            <span className="block text-[12px] text-fg-muted mb-1">Supplier *</span>
             <select
               value={supplierId}
               onChange={(e) => setSupplierId(e.target.value)}
-              className="w-full border border-slate-300 rounded px-2 py-1.5 bg-white"
+              className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             >
               <option value="">— Select supplier —</option>
               {suppliers.map((s) => (
@@ -511,53 +511,53 @@ export default function PurchasesPage() {
               ))}
             </select>
             {suppliers.length === 0 && (
-              <div className="mt-1 text-xs text-rose-600">
+              <div className="mt-1 text-xs text-danger">
                 No suppliers yet — <Link to="/suppliers" className="underline">add one</Link>.
               </div>
             )}
           </label>
           <label>
-            <span className="block text-slate-700 mb-1">Bill date *</span>
+            <span className="block text-[12px] text-fg-muted mb-1">Bill date *</span>
             <input
               type="date"
               value={billDate}
               onChange={(e) => setBillDate(e.target.value)}
-              className="w-full border border-slate-300 rounded px-2 py-1.5"
+              className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
           <label>
-            <span className="block text-slate-700 mb-1">Bill # *</span>
+            <span className="block text-[12px] text-fg-muted mb-1">Bill # *</span>
             <input
               value={billNumber}
               onChange={(e) => setBillNumber(e.target.value)}
-              className="w-full border border-slate-300 rounded px-2 py-1.5"
+              className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
           <label>
-            <span className="block text-slate-700 mb-1">Supplier bill #</span>
+            <span className="block text-[12px] text-fg-muted mb-1">Supplier bill #</span>
             <input
               value={supplierBillNumber}
               onChange={(e) => setSupplierBillNumber(e.target.value)}
-              className="w-full border border-slate-300 rounded px-2 py-1.5"
+              className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
           <label className="col-span-2">
-            <span className="block text-slate-700 mb-1">Notes</span>
+            <span className="block text-[12px] text-fg-muted mb-1">Notes</span>
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              className="w-full border border-slate-300 rounded px-2 py-1.5 h-14"
+              className="w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-[13px] text-fg h-14 focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
         </div>
 
         <div className="mt-4">
           <div className="flex items-center justify-between mb-2">
-            <h3 className="text-sm font-semibold text-slate-700">Line items</h3>
+            <h3 className="text-sm font-semibold text-fg">Line items</h3>
             <button
               type="button"
               onClick={addLine}
-              className="text-xs border border-slate-300 rounded px-2 py-1 hover:bg-slate-100"
+              className="h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg-muted hover:text-fg hover:bg-surface-hover"
             >
               + Add line
             </button>
@@ -566,14 +566,14 @@ export default function PurchasesPage() {
             {lines.map((l, idx) => (
               <div
                 key={idx}
-                className="grid grid-cols-12 gap-2 text-xs items-end border border-slate-200 rounded p-2"
+                className="grid grid-cols-12 gap-2 text-xs items-end border border-border rounded-md p-2 bg-surface"
               >
                 <label className="col-span-4">
-                  <span className="block text-slate-600 mb-0.5">Item</span>
+                  <span className="block text-[12px] text-fg-muted mb-0.5">Item</span>
                   <select
                     value={l.itemId}
                     onChange={(e) => pickItem(idx, e.target.value)}
-                    className="w-full border border-slate-300 rounded px-1.5 py-1 bg-white"
+                    className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                   >
                     <option value="">— pick —</option>
                     {items.map((it) => (
@@ -584,30 +584,30 @@ export default function PurchasesPage() {
                   </select>
                 </label>
                 <label className="col-span-2">
-                  <span className="block text-slate-600 mb-0.5">Qty</span>
+                  <span className="block text-[12px] text-fg-muted mb-0.5">Qty</span>
                   <input
                     value={l.qty}
                     onChange={(e) => updateLine(idx, { qty: e.target.value })}
-                    className="w-full border border-slate-300 rounded px-1.5 py-1 text-right"
+                    className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg text-right focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                   />
                 </label>
                 <label className="col-span-2">
-                  <span className="block text-slate-600 mb-0.5">Unit cost (₹)</span>
+                  <span className="block text-[12px] text-fg-muted mb-0.5">Unit cost (₹)</span>
                   <input
                     value={l.unitCostRupees}
                     onChange={(e) => updateLine(idx, { unitCostRupees: e.target.value })}
-                    className="w-full border border-slate-300 rounded px-1.5 py-1 text-right"
+                    className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg text-right focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                   />
                 </label>
                 <label className="col-span-2">
-                  <span className="block text-slate-600 mb-0.5">GST %</span>
+                  <span className="block text-[12px] text-fg-muted mb-0.5">GST %</span>
                   <input
                     value={l.taxRatePct}
                     onChange={(e) => updateLine(idx, { taxRatePct: e.target.value })}
-                    className="w-full border border-slate-300 rounded px-1.5 py-1 text-right"
+                    className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg text-right focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                   />
                 </label>
-                <div className="col-span-1 text-right text-slate-700">
+                <div className="col-span-1 text-right text-fg">
                   <Money paise={Math.round(Number(l.qty) * Number(l.unitCostRupees) * 100)} />
                 </div>
                 <div className="col-span-1 text-right">
@@ -615,7 +615,7 @@ export default function PurchasesPage() {
                     type="button"
                     onClick={() => removeLine(idx)}
                     disabled={lines.length === 1}
-                    className="text-rose-600 hover:underline disabled:opacity-40"
+                    className="text-danger hover:underline disabled:opacity-40"
                     aria-label="Remove line"
                   >
                     ✕
@@ -626,14 +626,14 @@ export default function PurchasesPage() {
           </div>
         </div>
 
-        <div className="mt-4 flex flex-col items-end text-sm gap-1">
+        <div className="mt-4 flex flex-col items-end text-sm gap-1 text-fg">
           <div>Subtotal: <Money paise={subtotalPaise} /></div>
           <div>GST: <Money paise={taxPaise} /></div>
           <div className="font-semibold">Total: <Money paise={totalPaise} /></div>
         </div>
 
         {saveError && (
-          <div className="mt-3 text-sm text-rose-600 whitespace-pre-wrap">{saveError}</div>
+          <div className="mt-3 text-sm text-danger whitespace-pre-wrap">{saveError}</div>
         )}
       </Drawer>
     </div>
