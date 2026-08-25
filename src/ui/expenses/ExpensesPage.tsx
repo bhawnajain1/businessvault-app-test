@@ -262,10 +262,10 @@ export default function ExpensesPage() {
     });
   }
 
-  if (loading) return <div className="p-6 text-slate-500">Loading...</div>;
+  if (loading) return <div className="p-6 text-fg-muted">Loading...</div>;
   if (!businessId) {
     return (
-      <div className="p-6 text-slate-600">
+      <div className="p-6 text-fg-muted">
         No active business — complete onboarding first.
       </div>
     );
@@ -274,11 +274,11 @@ export default function ExpensesPage() {
   return (
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Expenses</h1>
+        <h1 className="text-xl font-semibold text-fg">Expenses</h1>
         <button
           type="button"
           onClick={openDrawer}
-          className="bg-slate-900 text-white text-sm rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50"
+          className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
           disabled={categoryAccounts.length === 0 || paymentAccounts.length === 0}
           title={
             categoryAccounts.length === 0
@@ -301,7 +301,7 @@ export default function ExpensesPage() {
         <select
           value={categoryFilter}
           onChange={(e) => setCategoryFilter(e.target.value)}
-          className="border border-slate-300 rounded px-2 py-1.5"
+          className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
         >
           <option value="">All categories</option>
           {categoryAccounts.map((a) => (
@@ -323,48 +323,48 @@ export default function ExpensesPage() {
 
       {drawerOpen && (
         <div
-          className="fixed inset-0 z-40 bg-slate-900/40 flex items-start justify-end"
+          className="fixed inset-0 z-40 bg-black/40 flex items-start justify-end"
           onClick={closeDrawer}
         >
           <div
-            className="h-full w-full max-w-md bg-white shadow-xl flex flex-col"
+            className="h-full w-full max-w-md bg-surface shadow-xl border-l border-border flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-              <h2 className="text-base font-semibold">New Expense</h2>
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+              <h2 className="text-base font-semibold text-fg">New Expense</h2>
               <button
                 type="button"
                 onClick={closeDrawer}
-                className="text-sm text-slate-500 hover:text-slate-900"
+                className="text-sm text-fg-muted hover:text-fg"
               >
                 Close
               </button>
             </div>
             <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3 text-sm">
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">Expense #</span>
+                <span className="block text-[12px] text-fg-muted mb-1">Expense #</span>
                 <input
                   value={expenseNumber}
                   onChange={(e) => setExpenseNumber(e.target.value)}
                   placeholder="e.g. EXP-2026-001"
-                  className="border border-slate-300 rounded px-2 py-1.5"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 />
               </label>
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">Date</span>
+                <span className="block text-[12px] text-fg-muted mb-1">Date</span>
                 <input
                   type="date"
                   value={expenseDate}
                   onChange={(e) => setExpenseDate(e.target.value)}
-                  className="border border-slate-300 rounded px-2 py-1.5"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 />
               </label>
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">Category (expense account)</span>
+                <span className="block text-[12px] text-fg-muted mb-1">Category (expense account)</span>
                 <select
                   value={categoryAccountId}
                   onChange={(e) => setCategoryAccountId(e.target.value)}
-                  className="border border-slate-300 rounded px-2 py-1.5 bg-white"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 >
                   <option value="">— select —</option>
                   {categoryAccounts.map((a) => (
@@ -375,11 +375,11 @@ export default function ExpensesPage() {
                 </select>
               </label>
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">Paid from (asset account)</span>
+                <span className="block text-[12px] text-fg-muted mb-1">Paid from (asset account)</span>
                 <select
                   value={paymentAccountId}
                   onChange={(e) => setPaymentAccountId(e.target.value)}
-                  className="border border-slate-300 rounded px-2 py-1.5 bg-white"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 >
                   <option value="">— select —</option>
                   {paymentAccounts.map((a) => (
@@ -390,11 +390,11 @@ export default function ExpensesPage() {
                 </select>
               </label>
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">Supplier (optional)</span>
+                <span className="block text-[12px] text-fg-muted mb-1">Supplier (optional)</span>
                 <select
                   value={supplierId}
                   onChange={(e) => setSupplierId(e.target.value)}
-                  className="border border-slate-300 rounded px-2 py-1.5 bg-white"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 >
                   <option value="">— none —</option>
                   {suppliers.map((s) => (
@@ -405,44 +405,44 @@ export default function ExpensesPage() {
                 </select>
               </label>
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">Description</span>
+                <span className="block text-[12px] text-fg-muted mb-1">Description</span>
                 <input
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  className="border border-slate-300 rounded px-2 py-1.5"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 />
               </label>
               <div className="grid grid-cols-2 gap-2">
                 <label className="flex flex-col">
-                  <span className="text-slate-600 mb-1">Amount (₹)</span>
+                  <span className="block text-[12px] text-fg-muted mb-1">Amount (₹)</span>
                   <input
                     type="number"
                     step="0.01"
                     min="0"
                     value={amountStr}
                     onChange={(e) => setAmountStr(e.target.value)}
-                    className="border border-slate-300 rounded px-2 py-1.5"
+                    className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring text-right"
                   />
                 </label>
                 <label className="flex flex-col">
-                  <span className="text-slate-600 mb-1">Tax (₹, optional)</span>
+                  <span className="block text-[12px] text-fg-muted mb-1">Tax (₹, optional)</span>
                   <input
                     type="number"
                     step="0.01"
                     min="0"
                     value={taxStr}
                     onChange={(e) => setTaxStr(e.target.value)}
-                    className="border border-slate-300 rounded px-2 py-1.5"
+                    className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring text-right"
                   />
                 </label>
               </div>
-              {saveError && <div className="text-sm text-rose-600">{saveError}</div>}
+              {saveError && <div className="text-sm text-danger">{saveError}</div>}
             </div>
-            <div className="border-t border-slate-200 px-4 py-3 flex justify-end gap-2">
+            <div className="border-t border-border px-4 py-3 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={closeDrawer}
-                className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+                className="h-8 rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
               >
                 Cancel
               </button>
@@ -450,7 +450,7 @@ export default function ExpensesPage() {
                 type="button"
                 onClick={saveNew}
                 disabled={saving}
-                className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50"
+                className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
               >
                 {saving ? 'Saving…' : 'Save expense'}
               </button>
