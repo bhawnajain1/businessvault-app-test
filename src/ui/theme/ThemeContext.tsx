@@ -1,6 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, type ReactNode } from 'react';
 
-export type Theme = 'light' | 'dark';
+export type Theme = 'light';
 
 interface ThemeCtx {
   theme: Theme;
@@ -11,42 +11,22 @@ interface ThemeCtx {
 const Ctx = createContext<ThemeCtx | null>(null);
 const STORAGE_KEY = 'bv-theme';
 
-function readInitialTheme(): Theme {
-  if (typeof window === 'undefined') return 'light';
-  try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    if (stored === 'light' || stored === 'dark') return stored;
-  } catch {
-    // ignore
-  }
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-}
-
-function applyTheme(theme: Theme): void {
-  const root = document.documentElement;
-  if (theme === 'dark') root.classList.add('dark');
-  else root.classList.remove('dark');
-}
-
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(() => readInitialTheme());
-
   useEffect(() => {
-    applyTheme(theme);
+    document.documentElement.classList.remove('dark');
     try {
-      window.localStorage.setItem(STORAGE_KEY, theme);
+      window.localStorage.removeItem(STORAGE_KEY);
     } catch {
       // ignore
     }
-  }, [theme]);
+  }, []);
 
-  const setTheme = useCallback((t: Theme) => setThemeState(t), []);
-  const toggle = useCallback(
-    () => setThemeState((t) => (t === 'dark' ? 'light' : 'dark')),
-    [],
-  );
-
-  return <Ctx.Provider value={{ theme, toggle, setTheme }}>{children}</Ctx.Provider>;
+  const value: ThemeCtx = {
+    theme: 'light',
+    toggle: () => {},
+    setTheme: () => {},
+  };
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
 export function useTheme(): ThemeCtx {

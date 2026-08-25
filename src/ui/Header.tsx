@@ -1,6 +1,5 @@
 import { Link } from 'react-router-dom';
 import CloudIndicator from './CloudIndicator';
-import ThemeToggle from './theme/ThemeToggle';
 
 // Baked in at build time from the FEEDBACK_EMAIL GitHub Actions secret. Kept
 // out of source so scrapers on the public Pages build don't harvest the
@@ -60,7 +59,6 @@ export default function Header() {
           </a>
         )}
         <CloudIndicator />
-        <ThemeToggle />
       </div>
     </header>
   );
