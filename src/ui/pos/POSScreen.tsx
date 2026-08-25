@@ -20,6 +20,7 @@ import type {
   Warehouse,
 } from '../../db/types';
 import { InvoiceService, type CreateInvoiceLineInput } from '../../domain/InvoiceService';
+import { allocateInvoiceNumber } from '../../domain/invoiceNumbering';
 import { splitTax, isInterstate, roundOffToNearestRupee } from '../../domain/gst';
 import { fromMoney } from '../../domain/money';
 import type { Money } from '../../domain/money';
@@ -368,7 +369,7 @@ export default function POSScreen(): JSX.Element {
           round_off_paise: totals.roundOff,
         });
       } else {
-        const invoiceNumber = await allocateInvoiceNumber(business.id);
+        const invoiceNumber = await allocateInvoiceNumber(db, business.id);
         invoice = await svc.createInvoice({
           business_id: business.id,
           device_id: deviceId,
@@ -963,25 +964,6 @@ function computeTotals(
     total,
     computed,
   };
-}
-
-// ---- invoice numbering: atomic-ish increment on Business ----
-// Dexie transactions serialize writes on the same table, so read-modify-write
-// on businesses in a `rw` tx is safe on a single tab. Cross-tab writes are
-// serialized by IndexedDB itself.
-async function allocateInvoiceNumber(businessId: string): Promise<string> {
-  return db.transaction('rw', db.businesses, async () => {
-    const biz = await db.businesses.get(businessId);
-    if (!biz) throw new Error('Business not found');
-    const seq = biz.invoice_next_seq;
-    const prefix = biz.invoice_prefix || 'INV';
-    const number = `${prefix}-${String(seq).padStart(6, '0')}`;
-    await db.businesses.update(businessId, {
-      invoice_next_seq: seq + 1,
-      updated_at: new Date().toISOString(),
-    });
-    return number;
-  });
 }
 
 // ---- walk-in customer bootstrap (POS often has no named customer) ----

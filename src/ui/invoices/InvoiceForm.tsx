@@ -5,6 +5,7 @@ import { db } from '../../db';
 import type { Business, Customer, Item } from '../../db/types';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import { InvoiceService, type CreateInvoiceLineInput } from '../../domain/InvoiceService';
+import { allocateInvoiceNumber } from '../../domain/invoiceNumbering';
 import { PaymentService } from '../../domain/PaymentService';
 import { AdvanceService } from '../../domain/AdvanceService';
 import { bankersRound, isInterstate, splitTax } from '../../domain/gst';
@@ -318,7 +319,7 @@ export default function InvoiceForm() {
         saved = await svc.updateInvoice(editingId, commonInput);
       } else {
         const invoiceNumber =
-          invoiceNumberOverride.trim() || (await allocateInvoiceNumber(businessId));
+          invoiceNumberOverride.trim() || (await allocateInvoiceNumber(db, businessId));
         saved = await svc.createInvoice({
           ...commonInput,
           invoice_number: invoiceNumber,
@@ -913,17 +914,3 @@ function Row({ label, paise, strong }: { label: string; paise: number; strong?: 
   );
 }
 
-async function allocateInvoiceNumber(businessId: string): Promise<string> {
-  return db.transaction('rw', db.businesses, async () => {
-    const biz = await db.businesses.get(businessId);
-    if (!biz) throw new Error('Business not found');
-    const seq = biz.invoice_next_seq;
-    const prefix = biz.invoice_prefix || 'INV';
-    const number = `${prefix}-${String(seq).padStart(6, '0')}`;
-    await db.businesses.update(businessId, {
-      invoice_next_seq: seq + 1,
-      updated_at: new Date().toISOString(),
-    });
-    return number;
-  });
-}

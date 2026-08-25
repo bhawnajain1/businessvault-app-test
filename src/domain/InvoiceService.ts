@@ -268,7 +268,21 @@ export class InvoiceService {
           }
         }
 
-        // 1. invoices row
+        // 1. invoices row — guard against duplicate invoice_number in this business.
+        // The Dexie index [business_id+invoice_number] isn't marked unique (`&`),
+        // so enforce uniqueness in code inside the tx. Superseded originals
+        // (reversed_by_invoice_id set) don't count — updateInvoice re-uses their
+        // number for the reissue by design.
+        const dupe = await this.db.invoices
+          .where('[business_id+invoice_number]')
+          .equals([input.business_id, input.invoice_number])
+          .filter((row) => !row.reversed_by_invoice_id)
+          .first();
+        if (dupe) {
+          throw new Error(
+            `Invoice number ${input.invoice_number} already exists. Save cancelled to prevent a duplicate.`,
+          );
+        }
         await this.db.invoices.add(invoice);
 
         // 2. invoice_lines rows + one sync event per line so restore can

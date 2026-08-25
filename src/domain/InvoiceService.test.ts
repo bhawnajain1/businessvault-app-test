@@ -382,6 +382,27 @@ describe('InvoiceService.createInvoice', () => {
       .first();
     expect(stock?.qty_micros).toBe(100_000_000 - 2_000_000);
   });
+
+  it('rejects a duplicate invoice_number for the same business', async () => {
+    const base = {
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-DUP-1',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    };
+    await service.createInvoice(base);
+    await expect(service.createInvoice(base)).rejects.toThrow(/already exists/i);
+    // Only the first invoice persisted; no leaked lines / movements.
+    expect(await db.invoices.where('business_id').equals(businessId).count()).toBe(1);
+    expect(await db.invoice_lines.where('business_id').equals(businessId).count()).toBe(1);
+    expect(await db.stock_movements.where('business_id').equals(businessId).count()).toBe(1);
+  });
 });
 
 describe('InvoiceService — subtotal_paise is integer (regression)', () => {
