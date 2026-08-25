@@ -23,14 +23,19 @@ import DataExport from './DataExport';
 //   Google Drive
 //   Connected as: <email>
 //   Business folder: BusinessVault/<name>  [Open My Google Drive Folder]
-//   Last event sync:    <relative time>
-//   Last full snapshot: <relative time>
-//   Pending:            <count>
-//   Backup integrity:   <Verified | Failed>
-//   Status:             <HEALTHY | SYNCING | OFFLINE | DISCONNECTED | ERROR | CONFLICT | INTEGRITY_FAILURE>
+//   Last event sync:  <relative time>
+//   Last full backup: <relative time>
+//   Pending:          <count>
+//   Backup integrity: <Verified | Failed>
+//   Status:           <HEALTHY | SYNCING | OFFLINE | DISCONNECTED | ERROR | CONFLICT | INTEGRITY_FAILURE>
 //
-// Buttons: Snapshot now / Verify integrity now / Export My Business /
+// Buttons: Backup now / Verify integrity now / Export My Business /
 // Disconnect Google Drive.
+//
+// The word "snapshot" is retained inside the sync/storage code (job kind,
+// on-disk folder layout, protocol) because that's what the artifact IS —
+// a point-in-time snapshot of the data. But the UI says "backup" so end
+// users understand it as a backup operation.
 //
 // When DISCONNECTED shows persistent non-blocking warning + Reconnect (§30).
 
@@ -124,26 +129,59 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
     setError(null);
   };
 
-  const onSnapshotNow = useCallback(async (): Promise<void> => {
+  const onBackupNow = useCallback(async (): Promise<void> => {
     clearMessages();
     if (!getActiveProvider()) {
       setError('Google Drive is not connected — click Reconnect above, then try again.');
       return;
     }
-    setBusy('snapshot');
+    setBusy('backup');
+    setMessage('Preparing backup…');
     try {
       if (!business) {
         throw new Error('Business is still loading.');
       }
       const asOf = new Date().toISOString().slice(0, 10);
       const input = await buildSnapshotInput(db, businessId, business.name, 'ondemand', asOf);
-      await enqueue({
+      const job = await enqueue({
         businessId,
         kind: 'snapshot',
         payload: { input },
       });
       pokeSyncWorker();
-      setMessage('Snapshot queued. It will run in the background.');
+      setMessage('Backup uploading to Google Drive…');
+      // Poll the queued job until it lands. Backup jobs typically take
+      // 60-120s wall-clock; a fire-and-forget toast used to leave the user
+      // wondering whether it had failed. Poll every 750ms — cheap indexeddb
+      // read — and terminate on done/failed/timeout.
+      const startedAt = Date.now();
+      const TIMEOUT_MS = 10 * 60 * 1000; // 10 min hard ceiling
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const row = await db.sync_queue.get(job.id);
+        if (!row) {
+          // Job row disappeared — worker completed and cleaned it up, or
+          // db was cleared. Treat as success rather than error.
+          setMessage('Backup complete.');
+          break;
+        }
+        if (row.status === 'done') {
+          setMessage('Backup complete.');
+          break;
+        }
+        if (row.status === 'failed') {
+          setError(`Backup failed: ${row.last_error ?? 'unknown error'}`);
+          break;
+        }
+        if (Date.now() - startedAt > TIMEOUT_MS) {
+          setError('Backup is still running after 10 minutes. Check back later — it may finish in the background.');
+          break;
+        }
+        if (row.status === 'running') {
+          setMessage(`Backup uploading… (attempt ${row.attempts + 1})`);
+        }
+        await new Promise((r) => setTimeout(r, 750));
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -333,7 +371,7 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
             }
           />
           <Row label="Last event sync" value={relativeTime(health.lastEventSyncAt)} />
-          <Row label="Last full snapshot" value={relativeTime(health.lastFullSnapshotAt)} />
+          <Row label="Last full backup" value={relativeTime(health.lastFullSnapshotAt)} />
           <Row label="Pending" value={String(health.pending)} />
           <Row label="Backup integrity" value={integrityLabel} />
           <Row
@@ -352,11 +390,11 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
       <div className="flex flex-wrap gap-3">
         <button
           type="button"
-          onClick={onSnapshotNow}
+          onClick={onBackupNow}
           disabled={!!busy || disconnected}
           className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
         >
-          {busy === 'snapshot' ? 'Queueing…' : 'Snapshot now'}
+          {busy === 'backup' ? 'Backup in progress…' : 'Backup now'}
         </button>
         <button
           type="button"

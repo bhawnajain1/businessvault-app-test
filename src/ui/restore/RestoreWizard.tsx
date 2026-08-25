@@ -558,7 +558,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
             </div>
             {report.migratedFrom !== undefined && (
               <div>
-                Migrated snapshot schema v{report.migratedFrom} → v
+                Migrated backup schema v{report.migratedFrom} → v
                 {report.schemaVersion}.
               </div>
             )}

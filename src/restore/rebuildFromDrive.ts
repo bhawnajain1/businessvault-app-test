@@ -236,7 +236,7 @@ export async function rebuildFromDrive(
   }
 
   // 5. pick + load the latest verified snapshot
-  progress('Loading latest snapshot', 40);
+  progress('Loading latest backup', 40);
   const snapshotIndex = await pickLatestVerifiedSnapshot(provider);
   let snapshotTables: SnapshotTables = emptyTables();
   let snapshotHandle: SnapshotHandle | undefined;
