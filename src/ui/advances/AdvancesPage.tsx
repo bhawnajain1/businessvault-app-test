@@ -299,12 +299,12 @@ export default function AdvancesPage() {
           <button
             type="button"
             onClick={() => openApply(r)}
-            className="text-xs bg-slate-900 text-white rounded px-2 py-1 hover:bg-slate-800"
+            className="h-7 rounded-md bg-accent px-2 text-[12px] font-medium text-accent-fg hover:opacity-90"
           >
             Apply
           </button>
         ) : (
-          <span className="text-xs text-slate-500">exhausted</span>
+          <span className="text-xs text-fg-subtle">exhausted</span>
         ),
     },
   ];
@@ -357,10 +357,10 @@ export default function AdvancesPage() {
     });
   }
 
-  if (loading) return <div className="p-6 text-slate-500">Loading...</div>;
+  if (loading) return <div className="p-6 text-fg-muted">Loading...</div>;
   if (!businessId) {
     return (
-      <div className="p-6 text-slate-600">
+      <div className="p-6 text-fg-muted">
         No active business — complete onboarding first.
       </div>
     );
@@ -369,11 +369,11 @@ export default function AdvancesPage() {
   return (
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Advances</h1>
+        <h1 className="text-xl font-semibold text-fg">Advances</h1>
         <button
           type="button"
           onClick={openRecordDrawer}
-          className="bg-slate-900 text-white text-sm rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50"
+          className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
           disabled={cashBankAccounts.length === 0}
           title={
             cashBankAccounts.length === 0
@@ -389,7 +389,7 @@ export default function AdvancesPage() {
         <select
           value={directionFilter}
           onChange={(e) => setDirectionFilter(e.target.value as PartyType | '')}
-          className="border border-slate-300 rounded px-2 py-1.5"
+          className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
         >
           <option value="">All types</option>
           <option value="customer">Customer advances</option>
@@ -408,64 +408,64 @@ export default function AdvancesPage() {
 
       {recordOpen && (
         <div
-          className="fixed inset-0 z-40 bg-slate-900/40 flex items-start justify-end"
+          className="fixed inset-0 z-40 bg-black/40 flex items-start justify-end"
           onClick={() => setRecordOpen(false)}
         >
           <div
-            className="h-full w-full max-w-md bg-white shadow-xl flex flex-col"
+            className="h-full w-full max-w-md bg-surface shadow-xl border-l border-border flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-              <h2 className="text-base font-semibold">Record advance</h2>
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+              <h2 className="text-base font-semibold text-fg">Record advance</h2>
               <button
                 type="button"
                 onClick={() => setRecordOpen(false)}
-                className="text-sm text-slate-500 hover:text-slate-900"
+                className="text-sm text-fg-muted hover:text-fg"
               >
                 Close
               </button>
             </div>
             <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3 text-sm">
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">Advance #</span>
+                <span className="block text-[12px] text-fg-muted mb-1">Advance #</span>
                 <input
                   value={advNumber}
                   onChange={(e) => setAdvNumber(e.target.value)}
                   placeholder="e.g. ADV-2026-001"
-                  className="border border-slate-300 rounded px-2 py-1.5"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 />
               </label>
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">Date</span>
+                <span className="block text-[12px] text-fg-muted mb-1">Date</span>
                 <input
                   type="date"
                   value={advDate}
                   onChange={(e) => setAdvDate(e.target.value)}
-                  className="border border-slate-300 rounded px-2 py-1.5"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 />
               </label>
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">Type</span>
+                <span className="block text-[12px] text-fg-muted mb-1">Type</span>
                 <select
                   value={partyType}
                   onChange={(e) => {
                     setPartyType(e.target.value as PartyType);
                     setPartyId('');
                   }}
-                  className="border border-slate-300 rounded px-2 py-1.5 bg-white"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 >
                   <option value="customer">Customer advance (money received)</option>
                   <option value="supplier">Supplier advance (money paid)</option>
                 </select>
               </label>
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">
+                <span className="block text-[12px] text-fg-muted mb-1">
                   {partyType === 'customer' ? 'Customer' : 'Supplier'}
                 </span>
                 <select
                   value={partyId}
                   onChange={(e) => setPartyId(e.target.value)}
-                  className="border border-slate-300 rounded px-2 py-1.5 bg-white"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 >
                   <option value="">— select —</option>
                   {partyOptions.map((p) => (
@@ -476,11 +476,11 @@ export default function AdvancesPage() {
                 </select>
               </label>
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">Method</span>
+                <span className="block text-[12px] text-fg-muted mb-1">Method</span>
                 <select
                   value={method}
                   onChange={(e) => setMethod(e.target.value as PaymentMethod)}
-                  className="border border-slate-300 rounded px-2 py-1.5 bg-white"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 >
                   {METHODS.map((m) => (
                     <option key={m} value={m}>
@@ -490,11 +490,11 @@ export default function AdvancesPage() {
                 </select>
               </label>
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">Cash / Bank account</span>
+                <span className="block text-[12px] text-fg-muted mb-1">Cash / Bank account</span>
                 <select
                   value={cashOrBankAccountId}
                   onChange={(e) => setCashOrBankAccountId(e.target.value)}
-                  className="border border-slate-300 rounded px-2 py-1.5 bg-white"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 >
                   <option value="">— select —</option>
                   {cashBankAccounts.map((a) => (
@@ -505,40 +505,40 @@ export default function AdvancesPage() {
                 </select>
               </label>
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">Amount (₹)</span>
+                <span className="block text-[12px] text-fg-muted mb-1">Amount (₹)</span>
                 <input
                   type="number"
                   step="0.01"
                   min="0"
                   value={amountStr}
                   onChange={(e) => setAmountStr(e.target.value)}
-                  className="border border-slate-300 rounded px-2 py-1.5"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 />
               </label>
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">Reference (optional)</span>
+                <span className="block text-[12px] text-fg-muted mb-1">Reference (optional)</span>
                 <input
                   value={reference}
                   onChange={(e) => setReference(e.target.value)}
-                  className="border border-slate-300 rounded px-2 py-1.5"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 />
               </label>
               <label className="flex flex-col">
-                <span className="text-slate-600 mb-1">Notes (optional)</span>
+                <span className="block text-[12px] text-fg-muted mb-1">Notes (optional)</span>
                 <textarea
                   value={advNotes}
                   onChange={(e) => setAdvNotes(e.target.value)}
                   rows={2}
-                  className="border border-slate-300 rounded px-2 py-1.5"
+                  className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                 />
               </label>
-              {recordError && <div className="text-sm text-rose-600">{recordError}</div>}
+              {recordError && <div className="text-sm text-danger">{recordError}</div>}
             </div>
-            <div className="border-t border-slate-200 px-4 py-3 flex justify-end gap-2">
+            <div className="border-t border-border px-4 py-3 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setRecordOpen(false)}
-                className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+                className="h-8 rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
               >
                 Cancel
               </button>
@@ -546,7 +546,7 @@ export default function AdvancesPage() {
                 type="button"
                 onClick={saveNewAdvance}
                 disabled={recordSaving}
-                className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50"
+                className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
               >
                 {recordSaving ? 'Saving…' : 'Save advance'}
               </button>
@@ -557,40 +557,40 @@ export default function AdvancesPage() {
 
       {applyTarget && (
         <div
-          className="fixed inset-0 z-40 bg-slate-900/40 flex items-start justify-end"
+          className="fixed inset-0 z-40 bg-black/40 flex items-start justify-end"
           onClick={() => setApplyTarget(null)}
         >
           <div
-            className="h-full w-full max-w-lg bg-white shadow-xl flex flex-col"
+            className="h-full w-full max-w-lg bg-surface shadow-xl border-l border-border flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-              <h2 className="text-base font-semibold">
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+              <h2 className="text-base font-semibold text-fg">
                 Apply advance {applyTarget.advance_number}
               </h2>
               <button
                 type="button"
                 onClick={() => setApplyTarget(null)}
-                className="text-sm text-slate-500 hover:text-slate-900"
+                className="text-sm text-fg-muted hover:text-fg"
               >
                 Close
               </button>
             </div>
             <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3 text-sm">
-              <div className="text-slate-600">
+              <div className="text-fg-muted">
                 Party: <strong>{partyById.get(applyTarget.party_id)?.name}</strong> · Remaining:{' '}
                 <strong>
                   <Money paise={applyTarget.remaining_paise} />
                 </strong>
               </div>
               {applyRows.length === 0 ? (
-                <div className="text-slate-500">
+                <div className="text-fg-muted">
                   No open {applyTarget.party_type === 'customer' ? 'invoices' : 'bills'} to apply
                   against.
                 </div>
               ) : (
                 <table className="w-full text-sm">
-                  <thead className="bg-slate-50 text-xs uppercase text-slate-600">
+                  <thead className="bg-app text-xs uppercase text-fg-muted">
                     <tr>
                       <th className="text-left px-2 py-1.5">
                         {applyTarget.party_type === 'customer' ? 'Invoice' : 'Bill'} #
@@ -601,7 +601,7 @@ export default function AdvancesPage() {
                   </thead>
                   <tbody>
                     {applyRows.map((r, i) => (
-                      <tr key={r.id} className="border-t border-slate-100">
+                      <tr key={r.id} className="border-t border-border">
                         <td className="px-2 py-1.5">{r.number}</td>
                         <td className="px-2 py-1.5 text-right">
                           <Money paise={r.balance_paise} />
@@ -619,7 +619,7 @@ export default function AdvancesPage() {
                                 ),
                               )
                             }
-                            className="w-28 border border-slate-300 rounded px-2 py-1 text-right"
+                            className="w-28 h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg text-right focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                           />
                         </td>
                       </tr>
@@ -627,13 +627,13 @@ export default function AdvancesPage() {
                   </tbody>
                 </table>
               )}
-              {applyError && <div className="text-sm text-rose-600">{applyError}</div>}
+              {applyError && <div className="text-sm text-danger">{applyError}</div>}
             </div>
-            <div className="border-t border-slate-200 px-4 py-3 flex justify-end gap-2">
+            <div className="border-t border-border px-4 py-3 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setApplyTarget(null)}
-                className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+                className="h-8 rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
               >
                 Cancel
               </button>
@@ -641,7 +641,7 @@ export default function AdvancesPage() {
                 type="button"
                 onClick={saveApplies}
                 disabled={applySaving || applyRows.length === 0}
-                className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50"
+                className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
               >
                 {applySaving ? 'Applying…' : 'Apply'}
               </button>
