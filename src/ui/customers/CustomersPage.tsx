@@ -418,11 +418,11 @@ export default function CustomersPage() {
   return (
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Customers</h1>
+        <h1 className="text-xl font-semibold text-fg">Customers</h1>
         <button
           type="button"
           onClick={openNew}
-          className="bg-slate-900 text-white text-sm rounded px-3 py-1.5 hover:bg-slate-800"
+          className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90"
         >
           New Customer
         </button>
@@ -447,7 +447,7 @@ export default function CustomersPage() {
             <button
               type="button"
               onClick={() => setDrawerOpen(false)}
-              className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+              className="h-8 rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
             >
               Cancel
             </button>
@@ -455,7 +455,7 @@ export default function CustomersPage() {
               type="button"
               disabled={saving || form.name.trim().length === 0}
               onClick={save}
-              className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50"
+              className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
             >
               {saving ? 'Saving...' : 'Save'}
             </button>
@@ -464,7 +464,7 @@ export default function CustomersPage() {
       >
         <CustomerFormFields form={form} setForm={setForm} />
         {saveError && (
-          <div className="mt-3 text-sm text-rose-600 whitespace-pre-wrap">{saveError}</div>
+          <div className="mt-3 text-sm text-danger whitespace-pre-wrap">{saveError}</div>
         )}
       </Drawer>
     </div>
@@ -494,47 +494,55 @@ function CustomerFormFields({
     const s = findStateByCode(code);
     setForm({ ...form, state: s?.name ?? '', stateCode: code });
   }
+  const labelCls = 'block text-[12px] text-fg-muted mb-1';
+  const inputCls =
+    'w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring';
+  const inputRightCls = `${inputCls} text-right`;
+  const readonlyCls =
+    'w-full h-8 rounded-md border border-border bg-app px-2.5 text-[13px] text-fg-muted';
+  const textareaCls =
+    'w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-[13px] text-fg h-16 focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring';
   return (
     <div className="grid grid-cols-2 gap-3 text-sm">
       <label className="col-span-2">
-        <span className="block text-slate-700 mb-1">Name *</span>
+        <span className={labelCls}>Name *</span>
         <input
           value={form.name}
           onChange={(e) => set('name', e.target.value)}
-          className="w-full border border-slate-300 rounded px-2 py-1.5"
+          className={inputCls}
         />
       </label>
       <label>
-        <span className="block text-slate-700 mb-1">Phone</span>
+        <span className={labelCls}>Phone</span>
         <input
           value={form.phone}
           onChange={(e) => set('phone', e.target.value)}
-          className="w-full border border-slate-300 rounded px-2 py-1.5"
+          className={inputCls}
         />
       </label>
       <label>
-        <span className="block text-slate-700 mb-1">Email</span>
+        <span className={labelCls}>Email</span>
         <input
           value={form.email}
           onChange={(e) => set('email', e.target.value)}
-          className="w-full border border-slate-300 rounded px-2 py-1.5"
+          className={inputCls}
         />
       </label>
       <label className="col-span-2">
-        <span className="block text-slate-700 mb-1">GSTIN</span>
+        <span className={labelCls}>GSTIN</span>
         <input
           value={form.gstin}
           onChange={(e) => onGstinChange(e.target.value)}
           placeholder="15-char GSTIN (state auto-fills from first 2 digits)"
-          className="w-full border border-slate-300 rounded px-2 py-1.5 uppercase"
+          className={`${inputCls} uppercase`}
         />
       </label>
       <label>
-        <span className="block text-slate-700 mb-1">State</span>
+        <span className={labelCls}>State</span>
         <select
           value={form.stateCode}
           onChange={(e) => onStateChange(e.target.value)}
-          className="w-full border border-slate-300 rounded px-2 py-1.5 bg-white"
+          className={inputCls}
         >
           <option value="">— Select state —</option>
           {INDIAN_STATES.map((s) => (
@@ -545,55 +553,55 @@ function CustomerFormFields({
         </select>
       </label>
       <label>
-        <span className="block text-slate-700 mb-1">State Code</span>
+        <span className={labelCls}>State Code</span>
         <input
           value={form.stateCode}
           readOnly
           tabIndex={-1}
-          className="w-full border border-slate-200 rounded px-2 py-1.5 bg-slate-50 text-slate-600"
+          className={readonlyCls}
         />
       </label>
       <label className="col-span-2">
-        <span className="block text-slate-700 mb-1">Billing Address</span>
+        <span className={labelCls}>Billing Address</span>
         <textarea
           value={form.billingAddress}
           onChange={(e) => set('billingAddress', e.target.value)}
-          className="w-full border border-slate-300 rounded px-2 py-1.5 h-16"
+          className={textareaCls}
         />
       </label>
       <label className="col-span-2">
-        <span className="block text-slate-700 mb-1">Shipping Address</span>
+        <span className={labelCls}>Shipping Address</span>
         <textarea
           value={form.shippingAddress}
           onChange={(e) => set('shippingAddress', e.target.value)}
-          className="w-full border border-slate-300 rounded px-2 py-1.5 h-16"
+          className={textareaCls}
         />
       </label>
       <label>
-        <span className="block text-slate-700 mb-1">Opening Balance (₹)</span>
+        <span className={labelCls}>Opening Balance (₹)</span>
         <input
           value={form.openingBalanceRupees}
           onChange={(e) => set('openingBalanceRupees', e.target.value)}
-          className="w-full border border-slate-300 rounded px-2 py-1.5 text-right"
+          className={inputRightCls}
         />
       </label>
       <label>
-        <span className="block text-slate-700 mb-1">Credit Limit (₹)</span>
+        <span className={labelCls}>Credit Limit (₹)</span>
         <input
           value={form.creditLimitRupees}
           onChange={(e) => set('creditLimitRupees', e.target.value)}
-          className="w-full border border-slate-300 rounded px-2 py-1.5 text-right"
+          className={inputRightCls}
         />
       </label>
       <label className="col-span-2">
-        <span className="block text-slate-700 mb-1">Notes</span>
+        <span className={labelCls}>Notes</span>
         <textarea
           value={form.notes}
           onChange={(e) => set('notes', e.target.value)}
-          className="w-full border border-slate-300 rounded px-2 py-1.5 h-16"
+          className={textareaCls}
         />
       </label>
-      <label className="col-span-2 inline-flex items-center gap-2">
+      <label className="col-span-2 inline-flex items-center gap-2 text-[13px] text-fg">
         <input
           type="checkbox"
           checked={form.active}
