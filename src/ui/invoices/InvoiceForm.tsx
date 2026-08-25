@@ -390,10 +390,10 @@ export default function InvoiceForm() {
     advanceAllocations,
   ]);
 
-  if (loading) return <div className="p-6 text-slate-500">Loading...</div>;
+  if (loading) return <div className="p-6 text-fg-muted">Loading...</div>;
   if (!businessId || !business)
     return (
-      <div className="p-6 text-slate-600">
+      <div className="p-6 text-fg-muted">
         No active business — complete onboarding first.
       </div>
     );
@@ -405,11 +405,11 @@ export default function InvoiceForm() {
           <Link to="/invoices" className="text-sm text-blue-700 hover:underline">
             ← Invoices
           </Link>
-          <h1 className="text-xl font-semibold">
+          <h1 className="text-xl font-semibold text-fg">
             {editingId ? `Edit Invoice ${originalInvoiceNumber ?? ''}` : 'New Invoice'}
           </h1>
         </div>
-        <div className="text-xs text-slate-500">
+        <div className="text-xs text-fg-muted">
           Prefer a fast till? Use{' '}
           <Link to="/invoices/quick" className="text-blue-700 hover:underline">
             POS mode
@@ -426,11 +426,11 @@ export default function InvoiceForm() {
 
       <section className="grid grid-cols-3 gap-3 text-sm">
         <label className="flex flex-col">
-          <span className="text-slate-600 mb-1">Customer</span>
+          <span className="block text-[12px] text-fg-muted mb-1">Customer</span>
           <select
             value={customerId}
             onChange={(e) => setCustomerId(e.target.value)}
-            className="border border-slate-300 rounded px-2 py-1.5 bg-white"
+            className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
           >
             <option value="">— select customer —</option>
             {customers.map((c) => (
@@ -442,46 +442,46 @@ export default function InvoiceForm() {
           </select>
         </label>
         <label className="flex flex-col">
-          <span className="text-slate-600 mb-1">Invoice date & time</span>
+          <span className="block text-[12px] text-fg-muted mb-1">Invoice date & time</span>
           <div className="flex gap-2">
             <input
               type="date"
               value={invoiceDate}
               onChange={(e) => setInvoiceDate(e.target.value)}
-              className="flex-1 border border-slate-300 rounded px-2 py-1.5"
+              className="flex-1 h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
             <input
               type="time"
               value={invoiceTime}
               onChange={(e) => setInvoiceTime(e.target.value)}
-              className="w-28 border border-slate-300 rounded px-2 py-1.5"
+              className="w-28 h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
               aria-label="Invoice time"
             />
           </div>
         </label>
         <label className="flex flex-col">
-          <span className="text-slate-600 mb-1">Due date (optional)</span>
+          <span className="block text-[12px] text-fg-muted mb-1">Due date (optional)</span>
           <input
             type="date"
             value={dueDate}
             onChange={(e) => setDueDate(e.target.value)}
-            className="border border-slate-300 rounded px-2 py-1.5"
+            className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </label>
         {!editingId && (
           <label className="flex flex-col">
-            <span className="text-slate-600 mb-1">
+            <span className="block text-[12px] text-fg-muted mb-1">
               Invoice # (leave blank to auto-assign)
             </span>
             <input
               value={invoiceNumberOverride}
               onChange={(e) => setInvoiceNumberOverride(e.target.value)}
               placeholder={`${business.invoice_prefix || 'INV'}-000123`}
-              className="border border-slate-300 rounded px-2 py-1.5"
+              className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
         )}
-        <div className="flex flex-col justify-end text-xs text-slate-500">
+        <div className="flex flex-col justify-end text-xs text-fg-muted">
           {customer && (
             <>
               <span>Buyer state: {customer.state || '—'} ({customer.state_code || '—'})</span>
@@ -499,7 +499,7 @@ export default function InvoiceForm() {
         <section className="border border-emerald-200 bg-emerald-50/40 rounded p-3 text-sm">
           <div className="font-medium mb-2 flex items-center justify-between">
             <span>Apply existing advance from this customer</span>
-            <span className="text-xs text-slate-500">
+            <span className="text-xs text-fg-muted">
               {openAdvances.length} open · total remaining ₹
               {(
                 openAdvances.reduce((s, a) => s + a.remaining_paise, 0) / 100
@@ -517,16 +517,16 @@ export default function InvoiceForm() {
                   <div className="flex-1 flex flex-col">
                     <span className="text-xs">
                       <span className="font-mono">{adv.advance_number}</span>
-                      <span className="text-slate-500"> · {adv.advance_date}</span>
-                      <span className="text-slate-500"> · {adv.method}</span>
+                      <span className="text-fg-muted"> · {adv.advance_date}</span>
+                      <span className="text-fg-muted"> · {adv.method}</span>
                     </span>
-                    <span className="text-xs text-slate-500">
+                    <span className="text-xs text-fg-muted">
                       Remaining ₹{remaining.toFixed(2)} of ₹
                       {(adv.amount_paise / 100).toFixed(2)}
                     </span>
                   </div>
                   <label className="flex items-center gap-1 text-xs">
-                    <span className="text-slate-600">Apply ₹</span>
+                    <span className="text-fg-muted">Apply ₹</span>
                     <input
                       type="number"
                       step="0.01"
@@ -543,7 +543,7 @@ export default function InvoiceForm() {
                         });
                       }}
                       placeholder="0.00"
-                      className="w-28 border border-slate-300 rounded px-1.5 py-1 text-right"
+                      className="w-28 h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg text-right focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                     />
                     <button
                       type="button"
@@ -565,9 +565,9 @@ export default function InvoiceForm() {
         </section>
       )}
 
-      <section className="border border-slate-200 rounded overflow-hidden">
+      <section className="border border-border rounded overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-xs uppercase text-slate-600">
+          <thead className="bg-app text-xs uppercase text-fg-muted">
             <tr>
               <th className="text-left px-2 py-2 w-8">#</th>
               <th className="text-left px-2 py-2">Item</th>
@@ -586,13 +586,13 @@ export default function InvoiceForm() {
             {lines.map((l, idx) => {
               const c = computedLines[idx];
               return (
-                <tr key={l.key} className="border-t border-slate-100 align-top">
-                  <td className="px-2 py-2 text-slate-500">{idx + 1}</td>
+                <tr key={l.key} className="border-t border-border align-top">
+                  <td className="px-2 py-2 text-fg-muted">{idx + 1}</td>
                   <td className="px-2 py-2">
                     <select
                       value={l.item_id}
                       onChange={(e) => pickItem(l.key, e.target.value)}
-                      className="w-full border border-slate-300 rounded px-1.5 py-1 bg-white"
+                      className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                     >
                       <option value="">— pick item —</option>
                       {items.map((it) => (
@@ -605,21 +605,21 @@ export default function InvoiceForm() {
                       value={l.description}
                       onChange={(e) => setLineField(l.key, 'description', e.target.value)}
                       placeholder="Line description (optional)"
-                      className="mt-1 w-full border border-slate-200 rounded px-1.5 py-1 text-xs"
+                      className="mt-1 w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                     />
                   </td>
                   <td className="px-2 py-2">
                     <input
                       value={l.hsn}
                       onChange={(e) => setLineField(l.key, 'hsn', e.target.value)}
-                      className="w-full border border-slate-300 rounded px-1.5 py-1"
+                      className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                     />
                   </td>
                   <td className="px-2 py-2">
                     <select
                       value={l.warehouse_id}
                       onChange={(e) => setLineField(l.key, 'warehouse_id', e.target.value)}
-                      className="w-full border border-slate-300 rounded px-1.5 py-1 bg-white"
+                      className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                     >
                       {warehouseOptions.length === 0 && <option value="">—</option>}
                       {warehouseOptions.map((w) => (
@@ -636,7 +636,7 @@ export default function InvoiceForm() {
                       min="0"
                       value={l.qtyStr}
                       onChange={(e) => setLineField(l.key, 'qtyStr', e.target.value)}
-                      className="w-full border border-slate-300 rounded px-1.5 py-1 text-right"
+                      className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg text-right focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                     />
                   </td>
                   <td className="px-2 py-2">
@@ -646,7 +646,7 @@ export default function InvoiceForm() {
                       min="0"
                       value={l.unitPriceStr}
                       onChange={(e) => setLineField(l.key, 'unitPriceStr', e.target.value)}
-                      className="w-full border border-slate-300 rounded px-1.5 py-1 text-right"
+                      className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg text-right focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                     />
                   </td>
                   <td className="px-2 py-2">
@@ -656,7 +656,7 @@ export default function InvoiceForm() {
                       min="0"
                       value={l.taxRatePctStr}
                       onChange={(e) => setLineField(l.key, 'taxRatePctStr', e.target.value)}
-                      className="w-full border border-slate-300 rounded px-1.5 py-1 text-right"
+                      className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg text-right focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                     />
                   </td>
                   <td className="px-2 py-2 text-right">₹{(c.taxable / 100).toFixed(2)}</td>
@@ -675,7 +675,7 @@ export default function InvoiceForm() {
                       type="button"
                       onClick={() => removeLine(l.key)}
                       disabled={lines.length === 1}
-                      className="text-rose-500 hover:text-rose-700 disabled:opacity-30"
+                      className="text-danger hover:opacity-80 disabled:opacity-30"
                       title="Remove line"
                     >
                       ×
@@ -686,7 +686,7 @@ export default function InvoiceForm() {
             })}
           </tbody>
         </table>
-        <div className="border-t border-slate-200 px-3 py-2 bg-slate-50">
+        <div className="border-t border-border px-3 py-2 bg-app">
           <button
             type="button"
             onClick={addLine}
@@ -700,41 +700,41 @@ export default function InvoiceForm() {
       <div className="grid grid-cols-2 gap-4">
         <div className="flex flex-col gap-3 text-sm">
           <label className="flex flex-col">
-            <span className="text-slate-600 mb-1">Notes</span>
+            <span className="block text-[12px] text-fg-muted mb-1">Notes</span>
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={3}
-              className="border border-slate-300 rounded px-2 py-1.5"
+              className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
           <label className="flex flex-col">
-            <span className="text-slate-600 mb-1">Terms</span>
+            <span className="block text-[12px] text-fg-muted mb-1">Terms</span>
             <textarea
               value={terms}
               onChange={(e) => setTerms(e.target.value)}
               rows={2}
-              className="border border-slate-300 rounded px-2 py-1.5"
+              className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
         </div>
         <div className="text-sm">
-          <div className="border border-slate-200 rounded p-3 space-y-1">
+          <div className="border border-border rounded-md p-3 space-y-1 bg-surface">
             <Row label="Taxable" paise={totals.taxable} />
             {totals.cgst > 0 && <Row label="CGST" paise={totals.cgst} />}
             {totals.sgst > 0 && <Row label="SGST" paise={totals.sgst} />}
             {totals.igst > 0 && <Row label="IGST" paise={totals.igst} />}
-            <div className="border-t border-slate-200 mt-2 pt-2">
+            <div className="border-t border-border mt-2 pt-2">
               <Row label="Total" paise={totals.total} strong />
             </div>
           </div>
         </div>
       </div>
 
-      <section className="border border-slate-200 rounded p-3 text-sm">
+      <section className="border border-border rounded-md p-3 text-sm bg-surface">
         <div className="flex items-center justify-between mb-2">
-          <h2 className="font-medium text-slate-800">Payment</h2>
-          <span className="text-xs text-slate-500">
+          <h2 className="font-medium text-fg">Payment</h2>
+          <span className="text-xs text-fg-muted">
             FULL sets the total to one method
           </span>
         </div>
@@ -801,7 +801,7 @@ export default function InvoiceForm() {
           const diff = totals.total - paidPaise;
           return (
             <div className="mt-2 flex justify-end gap-4 text-xs">
-              <span className="text-slate-500">
+              <span className="text-fg-muted">
                 Tendered: ₹{(paidPaise / 100).toFixed(2)}
               </span>
               <span
@@ -809,7 +809,7 @@ export default function InvoiceForm() {
                   diff === 0
                     ? 'text-emerald-700'
                     : diff > 0
-                      ? 'text-rose-600'
+                      ? 'text-danger'
                       : 'text-amber-700'
                 }
               >
@@ -825,7 +825,7 @@ export default function InvoiceForm() {
       </section>
 
       {saveError && (
-        <div className="text-sm text-rose-600 border border-rose-200 bg-rose-50 rounded px-3 py-2">
+        <div className="text-sm text-danger border border-danger/40 bg-danger-bg rounded-md px-3 py-2">
           {saveError}
         </div>
       )}
@@ -835,7 +835,7 @@ export default function InvoiceForm() {
           type="button"
           onClick={() => void save()}
           disabled={saving}
-          className="bg-slate-900 text-white text-sm rounded px-4 py-2 hover:bg-slate-800 disabled:opacity-50"
+          className="h-9 rounded-md bg-accent px-4 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
         >
           {saving
             ? 'Saving…'
@@ -847,13 +847,13 @@ export default function InvoiceForm() {
           type="button"
           onClick={() => void save({ thenPrint: true })}
           disabled={saving}
-          className="bg-emerald-600 text-white text-sm rounded px-4 py-2 hover:bg-emerald-700 disabled:opacity-50"
+          className="h-9 rounded-md bg-emerald-600 px-4 text-[13px] font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
         >
           {saving ? 'Saving…' : 'Save & print detailed invoice'}
         </button>
         <Link
           to="/invoices"
-          className="text-sm border border-slate-300 rounded px-3 py-2 hover:bg-slate-100"
+          className="h-9 inline-flex items-center rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
         >
           Cancel
         </Link>
@@ -876,7 +876,7 @@ function PaymentInput({
   return (
     <div className="flex flex-col">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-xs uppercase tracking-wide text-slate-500">
+        <span className="text-xs uppercase tracking-wide text-fg-muted">
           {label}
         </span>
         {onFull && (
@@ -896,7 +896,7 @@ function PaymentInput({
         step="0.01"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="border border-slate-300 rounded px-2 py-1.5 text-right font-mono"
+        className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg text-right font-mono focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
       />
     </div>
   );
@@ -905,7 +905,7 @@ function PaymentInput({
 function Row({ label, paise, strong }: { label: string; paise: number; strong?: boolean }) {
   return (
     <div
-      className={`flex justify-between ${strong ? 'font-semibold text-slate-900' : 'text-slate-700'}`}
+      className={`flex justify-between ${strong ? 'font-semibold text-fg' : 'text-fg-muted'}`}
     >
       <span>{label}</span>
       <span>₹{(paise / 100).toFixed(2)}</span>
