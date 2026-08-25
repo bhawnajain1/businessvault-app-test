@@ -497,18 +497,18 @@ export default function POSScreen(): JSX.Element {
   };
 
   return (
-    <div className="min-h-screen h-screen w-screen bg-slate-100 text-slate-900 flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between border-b border-slate-300 bg-white px-4 py-2">
-        <div className="font-semibold text-lg">
+    <div className="h-screen w-full bg-slate-100 text-slate-900 flex flex-col overflow-hidden">
+      <div className="flex items-center justify-between gap-3 border-b border-slate-300 bg-white px-4 py-2 min-w-0">
+        <div className="font-semibold text-lg shrink-0">
           {editingInvoiceId ? 'Edit Invoice' : 'POS'}
         </div>
-        <div className="text-sm text-slate-600 truncate">
+        <div className="text-sm text-slate-600 truncate min-w-0 flex-1">
           {business ? business.name : 'No business'} ·{' '}
           {warehouse ? warehouse.name : 'no warehouse'}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 shrink-0">
           <SavedFlash key={savedFlashKey} visible={saveState === 'saved'} />
-          <div className="text-xs text-slate-500">F2 search · F9 save · F4 clear</div>
+          <div className="text-xs text-slate-500 hidden md:block">F2 search · F9 save · F4 clear</div>
         </div>
       </div>
 
@@ -518,7 +518,7 @@ export default function POSScreen(): JSX.Element {
           <select
             value={customerId ?? ''}
             onChange={(e) => setCustomerId(e.target.value || null)}
-            className="border border-slate-300 rounded px-2 py-1 bg-white min-w-[220px]"
+            className="border border-slate-300 rounded px-2 py-1 bg-white min-w-0 max-w-[220px]"
           >
             <option value="">Walk-in customer</option>
             {(customerOptions ?? []).map((c) => (
@@ -558,7 +558,7 @@ export default function POSScreen(): JSX.Element {
           />
         </label>
         {editingInvoiceId && (
-          <div className="ml-auto text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+          <div className="ml-auto text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 max-w-full basis-full sm:basis-auto sm:max-w-md">
             Editing existing invoice — the original will be superseded (kept for audit) and a new copy will be issued under the same invoice number.
           </div>
         )}
