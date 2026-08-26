@@ -9,7 +9,7 @@ import type {
   StockMovement,
 } from '../db/types';
 import { appendSyncEvent } from './syncEventLog';
-import { bankersRound } from './gst';
+import { bankersRound, roundOffToNearestRupee } from './gst';
 
 export interface PurchaseServiceDeps {
   db: BusinessVaultDB;
@@ -42,6 +42,7 @@ export interface CreatePurchaseInput {
   financialYear: string;
   lines: PurchaseLineInput[];
   roundOffPaise?: number;
+  roundOffMode?: 'auto' | 'none' | 'manual';
   notes?: string;
   attachmentId?: string | null;
   accounts: {
@@ -167,8 +168,24 @@ export class PurchaseService {
       computed.push({ line, movement });
     });
 
-    const roundOff = input.roundOffPaise ?? 0;
-    const total = taxable + cgst + sgst + igst + cess + roundOff;
+    const preRoundTotal = taxable + cgst + sgst + igst + cess;
+    let roundOff: number;
+    let roundOffMode: 'auto' | 'none' | 'manual';
+    if (input.roundOffMode === 'auto') {
+      const auto = roundOffToNearestRupee(preRoundTotal);
+      roundOff = auto.round_off_paise;
+      roundOffMode = 'auto';
+    } else if (input.roundOffMode === 'none') {
+      roundOff = 0;
+      roundOffMode = 'none';
+    } else if (input.roundOffMode === 'manual') {
+      roundOff = input.roundOffPaise ?? 0;
+      roundOffMode = 'manual';
+    } else {
+      roundOff = input.roundOffPaise ?? 0;
+      roundOffMode = roundOff === 0 ? 'none' : 'manual';
+    }
+    const total = preRoundTotal + roundOff;
 
     const purchase: Purchase = {
       id: purchaseId,
@@ -189,6 +206,8 @@ export class PurchaseService {
       igst_paise: igst,
       cess_paise: cess,
       round_off_paise: roundOff,
+      round_off_mode: roundOffMode,
+      pre_round_total_paise: preRoundTotal,
       total_paise: total,
       paid_paise: 0,
       balance_paise: total,

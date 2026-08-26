@@ -266,6 +266,14 @@ export interface Invoice {
   igst_paise: number; // money: integer paise
   cess_paise: number; // money: integer paise
   round_off_paise: number; // money: integer paise (signed)
+  // Rounding treatment chosen for this invoice. 'auto' = compute round_off so
+  // total lands on nearest ₹1 (banker's rounding); 'none' = 0; 'manual' = user
+  // entered a specific round_off. Rows created before v6 default to 'auto'.
+  round_off_mode: 'auto' | 'none' | 'manual';
+  // Sum of taxable+cgst+sgst+igst+cess BEFORE round_off. Persisted so an
+  // editor can show "pre-round total" without re-summing lines. Always equals
+  // total_paise - round_off_paise; kept for readability + faster reports.
+  pre_round_total_paise: number;
   total_paise: number; // money: integer paise
   paid_paise: number; // money: integer paise
   balance_paise: number; // money: integer paise (signed)
@@ -329,6 +337,8 @@ export interface Purchase {
   igst_paise: number; // money: integer paise
   cess_paise: number; // money: integer paise
   round_off_paise: number; // money: integer paise
+  round_off_mode: 'auto' | 'none' | 'manual';
+  pre_round_total_paise: number;
   total_paise: number; // money: integer paise
   paid_paise: number; // money: integer paise
   balance_paise: number; // money: integer paise
@@ -652,6 +662,8 @@ export interface SalesReturn {
   igst_paise: number;
   cess_paise: number;
   round_off_paise: number;
+  round_off_mode: 'auto' | 'none' | 'manual';
+  pre_round_total_paise: number;
   total_paise: number;
   // Split of total_paise at create time: how much reduced the invoice's
   // outstanding balance vs. how much became a new customer-credit advance.

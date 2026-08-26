@@ -115,6 +115,8 @@ async function seedLegacyReversal(
     igst_paise: 0,
     cess_paise: 0,
     round_off_paise: 0,
+    round_off_mode: 'none',
+    pre_round_total_paise: origTaxable + 18000,
     total_paise: origTaxable + 18000,
     paid_paise: 0,
     balance_paise: origTaxable + 18000,

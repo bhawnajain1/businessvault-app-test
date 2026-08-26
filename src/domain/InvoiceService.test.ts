@@ -671,3 +671,252 @@ describe('InvoiceService.deleteInvoice / restoreInvoice', () => {
     expect(events.some((e) => e.operation === 'deleted')).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Round-off regression (feedback_1_to_7.md §1)
+// ---------------------------------------------------------------------------
+// Every mode ('auto' | 'none' | 'manual') must yield a total_paise that
+// exactly equals pre_round_total_paise + round_off_paise, and 'auto' must
+// snap to the nearest ₹1 via banker's rounding (0.50 → nearest even).
+//
+// Setup: use two 18%-GST lines at prices tuned to land inside each rounding
+// bucket. The intrastateLine() helper is 200 net + 36 GST = 236 paise total,
+// which lands on a boundary that's convenient for 'none'/'manual' cases; the
+// round-*-line helpers below craft explicit boundaries for 'auto'.
+// ---------------------------------------------------------------------------
+
+function customLine(unitPaise: number): ReturnType<typeof intrastateLine> {
+  // 1 unit, taxable = unitPaise, 18% intrastate.
+  const taxable = unitPaise;
+  const cgst = Math.round(taxable * 0.09);
+  const sgst = Math.round(taxable * 0.09);
+  return {
+    item_id: itemId,
+    hsn: '8471',
+    warehouse_id: warehouseId,
+    qty_micros: 1_000_000,
+    unit_price_paise: unitPaise,
+    taxable_paise: taxable,
+    tax_rate_bps: 1800,
+    cgst_paise: cgst,
+    sgst_paise: sgst,
+    igst_paise: 0,
+    line_total_paise: taxable + cgst + sgst,
+  };
+}
+
+describe('InvoiceService — round-off modes (feedback §1)', () => {
+  it("auto: rounds DOWN a total ending in <50 paise to the nearest rupee", async () => {
+    // ₹100.30 taxable + 18% = 118.354 → 11835 paise (rounded per-line).
+    // Actually per-line taxable is 10030 paise; cgst/sgst = round(10030*0.09)=903+903=1806.
+    // Line total = 10030 + 1806 = 11836. auto rounds 11836 → nearest 100 → 11800.
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'RO-DOWN',
+      invoice_date: '2026-08-26',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [customLine(10030)],
+      round_off_mode: 'auto',
+    });
+    expect(inv.round_off_mode).toBe('auto');
+    expect(inv.total_paise % 100).toBe(0);
+    expect(inv.pre_round_total_paise + inv.round_off_paise).toBe(inv.total_paise);
+    expect(inv.round_off_paise).toBeLessThan(0); // rounded down → negative
+  });
+
+  it("auto: rounds UP a total ending in >50 paise to the nearest rupee", async () => {
+    // 10080 paise taxable × 18% GST = 10080 + 907 + 907 = 11894. Rounds to 11900.
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'RO-UP',
+      invoice_date: '2026-08-26',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [customLine(10080)],
+      round_off_mode: 'auto',
+    });
+    expect(inv.round_off_mode).toBe('auto');
+    expect(inv.total_paise % 100).toBe(0);
+    expect(inv.pre_round_total_paise + inv.round_off_paise).toBe(inv.total_paise);
+    expect(inv.round_off_paise).toBeGreaterThan(0);
+  });
+
+  it('auto: leaves an exact whole-rupee total unchanged', async () => {
+    // intrastateLine() = 23600 paise = ₹236.00 exactly.
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'RO-EXACT',
+      invoice_date: '2026-08-26',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+      round_off_mode: 'auto',
+    });
+    expect(inv.round_off_paise).toBe(0);
+    expect(inv.round_off_mode).toBe('auto');
+    expect(inv.total_paise).toBe(23600);
+    expect(inv.pre_round_total_paise).toBe(23600);
+  });
+
+  it('auto: 50-paise halfway ties round to nearest even rupee (bankers)', async () => {
+    // Craft a line that sums to exactly ₹X.50 pre-round.
+    // taxable 4237, cgst=sgst=381 (round(4237*0.09)=381), sum=4999. Not 50-boundary.
+    // Instead pass a raw pre-round total via a line whose pieces sum to X50.
+    // Use taxable=250 gst=100 => not right. Simplest: unit=42, taxable=42,
+    // cgst=round(42*0.09)=4, sgst=4 -> 50. Perfect 50-paise.
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'RO-HALF',
+      invoice_date: '2026-08-26',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [customLine(42)], // total = 42+4+4 = 50 paise = ₹0.50 halfway
+      round_off_mode: 'auto',
+    });
+    // Banker's rounding of 0.5 → 0 (nearest even).
+    expect(inv.pre_round_total_paise).toBe(50);
+    expect(inv.total_paise).toBe(0);
+    expect(inv.round_off_paise).toBe(-50);
+  });
+
+  it('none: keeps the exact pre-round total, round_off=0', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'RO-NONE',
+      invoice_date: '2026-08-26',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [customLine(10037)], // arbitrary sub-rupee
+      round_off_mode: 'none',
+    });
+    expect(inv.round_off_mode).toBe('none');
+    expect(inv.round_off_paise).toBe(0);
+    expect(inv.total_paise).toBe(inv.pre_round_total_paise);
+  });
+
+  it('manual: applies caller-supplied positive round-off', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'RO-MANP',
+      invoice_date: '2026-08-26',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()], // pre-round 23600
+      round_off_mode: 'manual',
+      round_off_paise: 400, // +₹4.00
+    });
+    expect(inv.round_off_mode).toBe('manual');
+    expect(inv.round_off_paise).toBe(400);
+    expect(inv.total_paise).toBe(24000);
+    expect(inv.pre_round_total_paise).toBe(23600);
+  });
+
+  it('manual: applies caller-supplied negative round-off', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'RO-MANN',
+      invoice_date: '2026-08-26',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+      round_off_mode: 'manual',
+      round_off_paise: -100, // -₹1.00
+    });
+    expect(inv.round_off_mode).toBe('manual');
+    expect(inv.round_off_paise).toBe(-100);
+    expect(inv.total_paise).toBe(23500);
+    expect(inv.pre_round_total_paise).toBe(23600);
+  });
+
+  it('back-compat: caller who omits mode but passes round_off_paise still works', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'RO-LEGACY',
+      invoice_date: '2026-08-26',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+      round_off_paise: 40,
+    });
+    // Non-zero round_off with no explicit mode ⇒ 'manual' (see InvoiceService.ts).
+    expect(inv.round_off_mode).toBe('manual');
+    expect(inv.round_off_paise).toBe(40);
+    expect(inv.total_paise).toBe(23640);
+  });
+
+  it("journal balances to the paise even under 'auto' rounding", async () => {
+    // The journal builder is expected to post the diff to '4900 Round Off'
+    // so debits === credits === total. We assert directly on the journal_lines.
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'RO-JRNL',
+      invoice_date: '2026-08-26',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [customLine(10080)],
+      round_off_mode: 'auto',
+    });
+    const lines = await db.journal_lines
+      .where('entry_id')
+      .equals(inv.journal_entry_id)
+      .toArray();
+    const debits = lines.reduce((s, l) => s + l.debit_paise, 0);
+    const credits = lines.reduce((s, l) => s + l.credit_paise, 0);
+    expect(debits).toBe(credits); // trial balance ties to the paise
+    // The header journal for this invoice includes AR + COGS on the debit side
+    // and Sales + GST + Inventory + Round-Off on the credit side, so the
+    // side-totals equal total + COGS, not total alone. The Round-Off account
+    // is the one that carries the ₹6 rounding piece; verify it explicitly.
+    const roundOffAcct = await db.accounts
+      .where('[business_id+code]')
+      .equals([businessId, '4900'])
+      .first();
+    expect(roundOffAcct).toBeTruthy();
+    const roundOffLine = lines.find((l) => l.account_id === roundOffAcct!.id);
+    expect(roundOffLine).toBeTruthy();
+    // auto-mode rounded UP → 4900 posts as a credit (income) equal to +round_off.
+    // rounded DOWN would post as a debit (contra-income).
+    if (inv.round_off_paise > 0) {
+      expect(roundOffLine!.credit_paise).toBe(inv.round_off_paise);
+    } else if (inv.round_off_paise < 0) {
+      expect(roundOffLine!.debit_paise).toBe(-inv.round_off_paise);
+    }
+  });
+});

@@ -366,7 +366,7 @@ export default function POSScreen(): JSX.Element {
           is_interstate: interstate,
           financial_year: financialYear,
           lines: invoiceInputLines,
-          round_off_paise: totals.roundOff,
+          round_off_mode: 'auto',
         });
       } else {
         const invoiceNumber = await allocateInvoiceNumber(db, business.id);
@@ -381,7 +381,7 @@ export default function POSScreen(): JSX.Element {
           is_interstate: interstate,
           financial_year: financialYear,
           lines: invoiceInputLines,
-          round_off_paise: totals.roundOff,
+          round_off_mode: 'auto',
           idempotencyKey: `pos-${invoiceNumber}`,
         });
       }

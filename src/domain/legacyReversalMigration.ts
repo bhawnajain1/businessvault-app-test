@@ -348,6 +348,12 @@ async function materializeSalesReturn(
     igst_paise: Math.abs(cn.igst_paise),
     cess_paise: Math.abs(cn.cess_paise),
     round_off_paise: Math.abs(cn.round_off_paise),
+    // Legacy CNs predate v6's round_off_mode split. Their round_off was
+    // either 0 (bookkeeping-side) or auto-derived by POS in older builds;
+    // classifying migrated legacy rows as 'auto' matches the historical
+    // behaviour and keeps pre_round + round_off == total invariant.
+    round_off_mode: 'auto',
+    pre_round_total_paise: Math.abs(cn.total_paise) - Math.abs(cn.round_off_paise),
     total_paise: Math.abs(cn.total_paise),
     // Legacy CN reversals had no advance-credit concept — the full amount
     // reduced the invoice's balance. Preserve that on the header so a future
