@@ -8,7 +8,7 @@ import { InvoiceService, type CreateInvoiceLineInput } from '../../domain/Invoic
 import { allocateInvoiceNumber } from '../../domain/invoiceNumbering';
 import { PaymentService } from '../../domain/PaymentService';
 import { AdvanceService } from '../../domain/AdvanceService';
-import { bankersRound, isInterstate, splitTax } from '../../domain/gst';
+import { bankersRound, isInterstate, roundOffToNearestRupee, splitTax } from '../../domain/gst';
 import type { Advance } from '../../db/types';
 
 interface LineDraft {
@@ -87,6 +87,13 @@ export default function InvoiceForm() {
   const [originalInvoiceNumber, setOriginalInvoiceNumber] = useState<string | null>(
     null,
   );
+  // Round-off treatment. 'auto' snaps total to nearest ₹1 via banker's rounding;
+  // 'none' keeps the exact pre-round total; 'manual' lets the shopkeeper key in
+  // a specific ± amount (in rupees) — handy when you're rounding to a customer-
+  // pleasing ₹5 or ₹10 rather than ₹1. Default 'auto' matches long-standing POS
+  // behaviour so cash tenders stay whole-rupee.
+  const [roundOffMode, setRoundOffMode] = useState<'auto' | 'none' | 'manual'>('auto');
+  const [manualRoundOffStr, setManualRoundOffStr] = useState<string>('0');
 
   const svc = useMemo(() => new InvoiceService(), []);
   const paymentSvc = useMemo(() => new PaymentService(), []);
@@ -147,6 +154,8 @@ export default function InvoiceForm() {
       setNotes(inv.notes);
       setTerms(inv.terms);
       setOriginalInvoiceNumber(inv.invoice_number);
+      setRoundOffMode(inv.round_off_mode ?? 'auto');
+      setManualRoundOffStr(((inv.round_off_paise ?? 0) / 100).toString());
       setLines(
         invLines.map((l) => ({
           key: l.id,
@@ -206,17 +215,24 @@ export default function InvoiceForm() {
   }, [lines, interstate]);
 
   const totals = useMemo(() => {
-    return computedLines.reduce(
+    const base = computedLines.reduce(
       (acc, c) => ({
         taxable: acc.taxable + c.taxable,
         cgst: acc.cgst + c.split.cgst_paise,
         sgst: acc.sgst + c.split.sgst_paise,
         igst: acc.igst + c.split.igst_paise,
-        total: acc.total + c.lineTotal,
+        preRoundTotal: acc.preRoundTotal + c.lineTotal,
       }),
-      { taxable: 0, cgst: 0, sgst: 0, igst: 0, total: 0 },
+      { taxable: 0, cgst: 0, sgst: 0, igst: 0, preRoundTotal: 0 },
     );
-  }, [computedLines]);
+    let roundOff = 0;
+    if (roundOffMode === 'auto') {
+      roundOff = roundOffToNearestRupee(base.preRoundTotal).round_off_paise;
+    } else if (roundOffMode === 'manual') {
+      roundOff = toPaise(manualRoundOffStr);
+    }
+    return { ...base, roundOff, total: base.preRoundTotal + roundOff };
+  }, [computedLines, roundOffMode, manualRoundOffStr]);
 
   function addLine() {
     setLines((rows) => [...rows, { ...emptyLine(), warehouse_id: defaultWarehouseId }]);
@@ -310,6 +326,8 @@ export default function InvoiceForm() {
         is_interstate: interstate,
         financial_year: business.current_financial_year,
         lines: invLines,
+        round_off_mode: roundOffMode,
+        round_off_paise: roundOffMode === 'manual' ? toPaise(manualRoundOffStr) : 0,
         notes,
         terms,
       };
@@ -389,6 +407,8 @@ export default function InvoiceForm() {
     payments,
     advanceSvc,
     advanceAllocations,
+    roundOffMode,
+    manualRoundOffStr,
   ]);
 
   if (loading) return <div className="p-6 text-fg-muted">Loading...</div>;
@@ -725,6 +745,40 @@ export default function InvoiceForm() {
             {totals.cgst > 0 && <Row label="CGST" paise={totals.cgst} />}
             {totals.sgst > 0 && <Row label="SGST" paise={totals.sgst} />}
             {totals.igst > 0 && <Row label="IGST" paise={totals.igst} />}
+            {roundOffMode !== 'none' && (
+              <Row label="Subtotal" paise={totals.preRoundTotal} />
+            )}
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <div className="flex items-center gap-2">
+                <span className="text-fg-muted text-[12px]">Round off</span>
+                <select
+                  value={roundOffMode}
+                  onChange={(e) =>
+                    setRoundOffMode(e.target.value as 'auto' | 'none' | 'manual')
+                  }
+                  className="h-7 rounded-md border border-border bg-surface px-1.5 text-[12px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
+                  aria-label="Round off mode"
+                >
+                  <option value="auto">Auto</option>
+                  <option value="none">None</option>
+                  <option value="manual">Manual</option>
+                </select>
+                {roundOffMode === 'manual' && (
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={manualRoundOffStr}
+                    onChange={(e) => setManualRoundOffStr(e.target.value)}
+                    className="w-20 h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg text-right focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
+                    aria-label="Manual round off (rupees)"
+                    placeholder="0.00"
+                  />
+                )}
+              </div>
+              <span className="text-[13px] text-fg tabular-nums">
+                {roundOffMode === 'none' ? '—' : `₹${(totals.roundOff / 100).toFixed(2)}`}
+              </span>
+            </div>
             <div className="border-t border-border mt-2 pt-2">
               <Row label="Total" paise={totals.total} strong />
             </div>

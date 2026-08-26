@@ -423,6 +423,8 @@ describe('GST engine', () => {
         igst_paise: igst,
         cess_paise: 0,
         round_off_paise: 0,
+        round_off_mode: 'none',
+        pre_round_total_paise: total,
         total_paise: total,
         paid_paise: 0,
         balance_paise: total,

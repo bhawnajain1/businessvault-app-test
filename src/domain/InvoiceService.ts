@@ -13,7 +13,7 @@ import type {
   SyncEvent,
 } from '../db/types';
 import { canonicalJson, sha256Hex, GENESIS_HASH } from '../journal/event';
-import { bankersRound } from './gst';
+import { bankersRound, roundOffToNearestRupee } from './gst';
 import { log } from '../lib/log';
 
 // ---------- Account codes (system chart of accounts) ----------
@@ -63,6 +63,11 @@ export interface CreateInvoiceInput {
   financial_year: string;
   lines: CreateInvoiceLineInput[];
   discount_paise?: number;
+  // Round-off treatment. Default: 'auto' (nearest ₹1 via banker's rounding).
+  // When mode is 'manual', caller must also supply round_off_paise.
+  // When mode is 'none' or omitted-but-round_off_paise-supplied, that raw
+  // value wins for back-compat (POS still passes round_off_paise directly).
+  round_off_mode?: 'auto' | 'none' | 'manual';
   round_off_paise?: number;
   notes?: string;
   terms?: string;
@@ -126,8 +131,31 @@ export class InvoiceService {
     const lineIgst = sum(input.lines.map((l) => l.igst_paise));
     const lineCess = sum(input.lines.map((l) => l.cess_paise ?? 0));
     const discountPaise = input.discount_paise ?? 0;
-    const roundOff = input.round_off_paise ?? 0;
-    const totalPaise = lineTaxable + lineCgst + lineSgst + lineIgst + lineCess + roundOff;
+    const preRoundTotalPaise = lineTaxable + lineCgst + lineSgst + lineIgst + lineCess;
+    // Round-off resolution.
+    //   'auto'   → derive round_off from banker's rounding of preRoundTotalPaise to nearest ₹1.
+    //   'none'   → force round_off = 0 regardless of caller's round_off_paise.
+    //   'manual' → require round_off_paise, use as-is.
+    //   undefined (legacy callers) → use round_off_paise as supplied
+    //                                 (mode persists as 'manual' if non-zero,
+    //                                  else 'none') so behaviour matches pre-v6.
+    let roundOff: number;
+    let roundOffMode: 'auto' | 'none' | 'manual';
+    if (input.round_off_mode === 'auto') {
+      const auto = roundOffToNearestRupee(preRoundTotalPaise);
+      roundOff = auto.round_off_paise;
+      roundOffMode = 'auto';
+    } else if (input.round_off_mode === 'none') {
+      roundOff = 0;
+      roundOffMode = 'none';
+    } else if (input.round_off_mode === 'manual') {
+      roundOff = input.round_off_paise ?? 0;
+      roundOffMode = 'manual';
+    } else {
+      roundOff = input.round_off_paise ?? 0;
+      roundOffMode = roundOff === 0 ? 'none' : 'manual';
+    }
+    const totalPaise = preRoundTotalPaise + roundOff;
 
     // Sanity: interstate ⇒ no CGST/SGST; intrastate ⇒ no IGST
     if (input.is_interstate && (lineCgst > 0 || lineSgst > 0)) {
@@ -156,6 +184,8 @@ export class InvoiceService {
       igst_paise: lineIgst,
       cess_paise: lineCess,
       round_off_paise: roundOff,
+      round_off_mode: roundOffMode,
+      pre_round_total_paise: preRoundTotalPaise,
       total_paise: totalPaise,
       paid_paise: 0,
       balance_paise: totalPaise,
@@ -511,6 +541,8 @@ export class InvoiceService {
       igst_paise: -original.igst_paise,
       cess_paise: -original.cess_paise,
       round_off_paise: -original.round_off_paise,
+      round_off_mode: original.round_off_mode,
+      pre_round_total_paise: -original.pre_round_total_paise,
       total_paise: -original.total_paise,
       paid_paise: 0,
       balance_paise: -original.total_paise,

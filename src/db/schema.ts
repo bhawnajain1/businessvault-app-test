@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const DB_NAME = 'businessvault';
 
@@ -133,4 +133,14 @@ export const STORES_V5: Record<string, string> = {
     '&invoice_line_id, business_id, invoice_id, [business_id+invoice_id]',
   legacy_reversal_audit:
     '&credit_note_invoice_id, business_id, [business_id+classification], [business_id+original_invoice_id], examined_at',
+};
+
+// v6: adds Round Off treatment fields (round_off_mode, pre_round_total_paise)
+// to invoices, purchases, and sales_returns. No new indexes required; the
+// fields are read-only sidecars for reporting + UI. Backfill happens in
+// database.ts .version(6).upgrade(): existing rows get round_off_mode='auto'
+// and pre_round_total_paise = total_paise - round_off_paise, which is
+// definitionally consistent with the existing header math.
+export const STORES_V6: Record<string, string> = {
+  ...STORES_V5,
 };

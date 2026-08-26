@@ -96,12 +96,45 @@ const migration_v4_to_v5: Migration = {
   },
 };
 
+// v5 → v6: adds `round_off_mode` + `pre_round_total_paise` to invoices,
+// purchases, and sales_returns headers. Older snapshots don't have these
+// columns; when restored we synthesize them so the invariant
+// `pre_round + round_off == total` holds and the UI's mode toggle shows
+// something sensible for a legacy row. `auto` is chosen because pre-v6
+// non-zero round_offs originated from POS's nearest-rupee logic, and rows
+// with zero round_off render identically under any mode.
+const migration_v5_to_v6: Migration = {
+  from: 5,
+  to: 6,
+  describe:
+    'v5 → v6: adds round_off_mode + pre_round_total_paise on invoices / purchases / sales_returns',
+  apply(tables) {
+    const backfill = (rows: Record<string, unknown>[] | undefined) =>
+      (rows ?? []).map((r) => {
+        const total = typeof r.total_paise === 'number' ? r.total_paise : 0;
+        const roundOff = typeof r.round_off_paise === 'number' ? r.round_off_paise : 0;
+        return {
+          ...r,
+          round_off_mode: r.round_off_mode ?? 'auto',
+          pre_round_total_paise: r.pre_round_total_paise ?? total - roundOff,
+        };
+      });
+    return {
+      ...tables,
+      invoices: backfill(tables.invoices),
+      purchases: backfill(tables.purchases),
+      sales_returns: backfill(tables.sales_returns),
+    };
+  },
+};
+
 export const MIGRATIONS: Migration[] = [
   migration_v0_to_v1,
   migration_v1_to_v2,
   migration_v2_to_v3,
   migration_v3_to_v4,
   migration_v4_to_v5,
+  migration_v5_to_v6,
 ];
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;

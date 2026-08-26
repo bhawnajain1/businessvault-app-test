@@ -6,6 +6,7 @@ import {
   STORES_V3,
   STORES_V4,
   STORES_V5,
+  STORES_V6,
 } from './schema';
 import { pokeSyncWorker } from '../sync/pokeChannel';
 import type {
@@ -84,6 +85,49 @@ export class BusinessVaultDB extends Dexie {
     this.version(3).stores(STORES_V3);
     this.version(4).stores(STORES_V4);
     this.version(5).stores(STORES_V5);
+    // v6: backfill round_off_mode + pre_round_total_paise on existing invoices,
+    // purchases, and sales_returns. The invariant is pre_round + round_off ==
+    // total, which is definitionally true for pre-v6 rows because their totals
+    // were computed with roundOff already folded in. `auto` is chosen because
+    // any pre-v6 row that had a non-zero round_off was written by the POS
+    // (which always uses nearest-rupee) — reads as "auto" cleanly.
+    this.version(6)
+      .stores(STORES_V6)
+      .upgrade(async (tx) => {
+        await tx
+          .table('invoices')
+          .toCollection()
+          .modify((row: { round_off_paise?: number; total_paise?: number; round_off_mode?: string; pre_round_total_paise?: number }) => {
+            if (row.round_off_mode === undefined) {
+              row.round_off_mode = 'auto';
+            }
+            if (row.pre_round_total_paise === undefined) {
+              row.pre_round_total_paise = (row.total_paise ?? 0) - (row.round_off_paise ?? 0);
+            }
+          });
+        await tx
+          .table('purchases')
+          .toCollection()
+          .modify((row: { round_off_paise?: number; total_paise?: number; round_off_mode?: string; pre_round_total_paise?: number }) => {
+            if (row.round_off_mode === undefined) {
+              row.round_off_mode = 'auto';
+            }
+            if (row.pre_round_total_paise === undefined) {
+              row.pre_round_total_paise = (row.total_paise ?? 0) - (row.round_off_paise ?? 0);
+            }
+          });
+        await tx
+          .table('sales_returns')
+          .toCollection()
+          .modify((row: { round_off_paise?: number; total_paise?: number; round_off_mode?: string; pre_round_total_paise?: number }) => {
+            if (row.round_off_mode === undefined) {
+              row.round_off_mode = 'auto';
+            }
+            if (row.pre_round_total_paise === undefined) {
+              row.pre_round_total_paise = (row.total_paise ?? 0) - (row.round_off_paise ?? 0);
+            }
+          });
+      });
 
     // After any sync_event insert commits, kick the sync worker so the write
     // lands in the local backup folder within a few hundred ms instead of

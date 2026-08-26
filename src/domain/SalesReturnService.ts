@@ -447,6 +447,8 @@ export class SalesReturnService {
           igst_paise: igstPaise,
           cess_paise: cessPaise,
           round_off_paise: roundOffPaise,
+          round_off_mode: 'none',
+          pre_round_total_paise: grossLines,
           total_paise: totalPaise,
           apply_to_balance_paise: applyToBalance,
           customer_credit_paise: customerCreditAmount,
