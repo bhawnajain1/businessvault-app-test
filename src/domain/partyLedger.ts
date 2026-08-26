@@ -206,8 +206,12 @@ export function computeReceivables(
   customers: Customer[] = [],
 ): DerivedReceivables {
   // Partition: originals (positive-total sales), credit notes (reversing).
-  // Cancelled and draft never contribute either way.
-  const usable = invoices.filter((i) => i.status !== 'cancelled' && i.status !== 'draft');
+  // Cancelled, draft, and recycled (deleted_at set) never contribute either
+  // way — §9 requires recycled invoices to have zero effect on receivables /
+  // party balance / aging alongside TB / P&L / BS.
+  const usable = invoices.filter(
+    (i) => i.status !== 'cancelled' && i.status !== 'draft' && !i.deleted_at,
+  );
   const originals = usable.filter((i) => i.reverses_invoice_id === null);
   const creditNotes = usable.filter((i) => i.reverses_invoice_id !== null);
   const creditsByOriginalId = new Map<string, Invoice[]>();

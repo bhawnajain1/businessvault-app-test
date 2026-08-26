@@ -291,6 +291,13 @@ export interface Invoice {
   // journal entry are NEVER removed from IndexedDB — audit chain intact.
   deleted_at?: string | null;
   deleted_reason?: string | null;
+  // §9: when a soft-delete happens, deleteInvoice posts a MIRROR journal entry
+  // (an "effect-reversal" — mirror of the invoice's original journal). Its id
+  // is stored here so restoreInvoice can post the un-reversal against it. Net
+  // effect on Trial Balance across delete → restore → delete → restore cycles
+  // is always +X (original) or 0 (deleted), keeping TB balanced without ever
+  // mutating history. `null` on a live invoice; set only while deleted_at set.
+  deletion_reversal_journal_id?: string | null;
   created_at: string;
   updated_at: string;
   entity_version: number;

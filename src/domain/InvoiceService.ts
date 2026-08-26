@@ -697,15 +697,26 @@ export class InvoiceService {
   }
 
   /**
-   * Soft-delete an invoice into the Recycle Bin. Journal entries and hash chain
-   * stay intact (audit-preserving); only `deleted_at` + `deleted_reason` are set
-   * on the invoice, its linked payments, and any advances applied to it. Restore
-   * clears the same fields. Idempotent — deleting an already-deleted invoice is
-   * a no-op.
+   * Soft-delete an invoice into the Recycle Bin (feedback §9).
    *
-   * Notes on cascade: payments/advances with allocations spanning multiple
-   * invoices are only soft-deleted when the deleted invoice is their SOLE
-   * remaining allocation target — otherwise they'd disappear from party ledgers
+   * The invoice, its lines, and its journal entry stay in the database
+   * forever (audit chain intact). What changes:
+   *
+   *   1. `deleted_at` / `deleted_reason` set on the invoice + on any payment/
+   *      advance whose SOLE allocation targets this invoice — reports and
+   *      list views filter these out.
+   *   2. A MIRROR journal entry is posted against the invoice's original
+   *      journal (same shape edit-reversal uses: ref_type='reversal',
+   *      reverses_id=<original journal>, mirror-swapped debit/credit).
+   *      Trial Balance, P&L, Balance Sheet, and any journal-derived report
+   *      see the net effect drop to zero WITHOUT deleting history.
+   *   3. `deletion_reversal_journal_id` stores the new mirror journal's id
+   *      so restoreInvoice can post the un-mirror later.
+   *
+   * Idempotent — deleting an already-deleted invoice is a no-op (no second
+   * mirror journal). Payments/advances with allocations spanning multiple
+   * invoices are only cascade-hidden when the deleted invoice is their sole
+   * remaining allocation target — otherwise they'd vanish from party ledgers
    * where they still legitimately apply.
    */
   async deleteInvoice(invoiceId: string, reason: string): Promise<void> {
@@ -742,22 +753,79 @@ export class InvoiceService {
       return apps.every((app) => app.invoice_id === invoiceId);
     });
 
+    // Fetch original journal so we can mirror it. If the invoice has no
+    // journal (edge case: draft that never posted), skip the reversal —
+    // there's nothing to undo. Same-tx read below re-fetches for atomicity.
+    const originalJournal = invoice.journal_entry_id
+      ? await this.db.journal_entries.get(invoice.journal_entry_id)
+      : null;
+    const originalLines = originalJournal
+      ? await this.db.journal_lines
+          .where('entry_id')
+          .equals(originalJournal.id)
+          .toArray()
+      : [];
+    const willPostReversal = !!originalJournal && originalLines.length > 0;
+    const reversalJournalId = willPostReversal ? ulid() : null;
+    const reversalJournal: JournalEntry | null = willPostReversal && originalJournal
+      ? {
+          id: reversalJournalId!,
+          business_id: invoice.business_id,
+          entry_number: `JE-DEL-${invoiceId}`,
+          entry_date: invoice.invoice_date,
+          narration: `Recycle bin reversal of ${invoice.invoice_number}: ${trimmedReason}`,
+          ref_type: 'reversal',
+          ref_id: invoiceId,
+          reversed_by_id: null,
+          reverses_id: originalJournal.id,
+          total_debit_paise: originalJournal.total_credit_paise,
+          total_credit_paise: originalJournal.total_debit_paise,
+          posted: 1,
+          created_at: now,
+          updated_at: now,
+          entity_version: 1,
+        }
+      : null;
+    const reversalLines: JournalLine[] = willPostReversal
+      ? originalLines.map((l, idx) => ({
+          id: ulid(),
+          business_id: l.business_id,
+          entry_id: reversalJournalId!,
+          line_no: idx + 1,
+          account_id: l.account_id,
+          debit_paise: l.credit_paise,
+          credit_paise: l.debit_paise,
+          party_type: l.party_type,
+          party_id: l.party_id,
+          description: `Recycle bin reversal: ${l.description}`,
+        }))
+      : [];
+
     const payload = {
       invoice_id: invoiceId,
       deleted_at: now,
       reason: trimmedReason,
       cascaded_payment_ids: paymentsToHide.map((p) => p.id),
       cascaded_advance_ids: advancesToHide.map((a) => a.id),
+      deletion_reversal_journal_id: reversalJournalId,
     };
     const payloadHash = await sha256Hex(canonicalJson(payload));
 
     await this.db.transaction(
       'rw',
-      [this.db.invoices, this.db.payments, this.db.advances, this.db.sync_events],
+      [
+        this.db.invoices,
+        this.db.payments,
+        this.db.advances,
+        this.db.journal_entries,
+        this.db.journal_lines,
+        this.db.sync_events,
+      ],
       async () => {
         await this.db.invoices.update(invoiceId, {
           deleted_at: now,
           deleted_reason: trimmedReason,
+          deletion_reversal_journal_id: reversalJournalId,
           updated_at: now,
           entity_version: invoice.entity_version + 1,
         });
@@ -777,6 +845,34 @@ export class InvoiceService {
             entity_version: a.entity_version + 1,
           });
         }
+        if (reversalJournal) {
+          await this.db.journal_entries.add(reversalJournal);
+          await this.db.journal_lines.bulkAdd(reversalLines);
+          // Emit sync events so the mirror journal replicates through
+          // sync/restore. Missing these breaks bit-exact round-trip.
+          await writeEventInTx(this.db, {
+            business_id: invoice.business_id,
+            device_id: 'system',
+            entity_type: 'journal_entry',
+            entity_id: reversalJournal.id,
+            operation: 'posted' as SyncEvent['operation'],
+            entity_version: 1,
+            timestamp: now,
+            payload: reversalJournal,
+          });
+          for (const rl of reversalLines) {
+            await writeEventInTx(this.db, {
+              business_id: invoice.business_id,
+              device_id: 'system',
+              entity_type: 'journal_line',
+              entity_id: rl.id,
+              operation: 'create' as SyncEvent['operation'],
+              entity_version: 1,
+              timestamp: now,
+              payload: rl,
+            });
+          }
+        }
         await writeEventInTx(this.db, {
           business_id: invoice.business_id,
           device_id: 'system',
@@ -793,9 +889,14 @@ export class InvoiceService {
   }
 
   /**
-   * Restore a soft-deleted invoice from the Recycle Bin. Also clears the
+   * Restore a soft-deleted invoice from the Recycle Bin (feedback §9).
+   *
+   * Also un-mirrors the deletion reversal journal by posting a fresh
+   * mirror-of-mirror (net back to +X on Trial Balance) and clears the
    * cascade flag on any payment/advance we marked with `cascade:${invoiceId}`.
-   * Idempotent — restoring a non-deleted invoice is a no-op.
+   * Idempotent — restoring a non-deleted invoice is a no-op. Repeated
+   * delete → restore cycles work because each cycle posts a fresh reversal
+   * pair; nothing tries to reuse the old mirror journal.
    */
   async restoreInvoice(invoiceId: string): Promise<void> {
     const invoice = await this.db.invoices.get(invoiceId);
@@ -817,21 +918,82 @@ export class InvoiceService {
       .toArray();
     const advancesToRestore = allAdvances.filter((a) => a.deleted_reason === cascadeTag);
 
+    // Un-mirror the deletion reversal, if there was one. Load the deletion
+    // reversal journal + its lines and post a fresh mirror (mirror-of-mirror
+    // == original sign, so the net across delete + restore is zero
+    // subtractions — we're back to the original invoice's effect on TB).
+    const deletionRevId = invoice.deletion_reversal_journal_id;
+    const deletionReversal = deletionRevId
+      ? await this.db.journal_entries.get(deletionRevId)
+      : null;
+    const deletionReversalLines = deletionReversal
+      ? await this.db.journal_lines
+          .where('entry_id')
+          .equals(deletionReversal.id)
+          .toArray()
+      : [];
+    const willPostUnReversal =
+      !!deletionReversal && deletionReversalLines.length > 0;
+    const unReversalId = willPostUnReversal ? ulid() : null;
+    const unReversal: JournalEntry | null =
+      willPostUnReversal && deletionReversal
+        ? {
+            id: unReversalId!,
+            business_id: invoice.business_id,
+            entry_number: `JE-RES-${invoiceId}`,
+            entry_date: invoice.invoice_date,
+            narration: `Recycle bin restore of ${invoice.invoice_number}`,
+            ref_type: 'reversal',
+            ref_id: invoiceId,
+            reversed_by_id: null,
+            reverses_id: deletionReversal.id,
+            total_debit_paise: deletionReversal.total_credit_paise,
+            total_credit_paise: deletionReversal.total_debit_paise,
+            posted: 1,
+            created_at: now,
+            updated_at: now,
+            entity_version: 1,
+          }
+        : null;
+    const unReversalLines: JournalLine[] = willPostUnReversal
+      ? deletionReversalLines.map((l, idx) => ({
+          id: ulid(),
+          business_id: l.business_id,
+          entry_id: unReversalId!,
+          line_no: idx + 1,
+          account_id: l.account_id,
+          debit_paise: l.credit_paise,
+          credit_paise: l.debit_paise,
+          party_type: l.party_type,
+          party_id: l.party_id,
+          description: `Recycle bin restore: ${l.description.replace(/^Recycle bin reversal: /, '')}`,
+        }))
+      : [];
+
     const payload = {
       invoice_id: invoiceId,
       restored_at: now,
       restored_payment_ids: paymentsToRestore.map((p) => p.id),
       restored_advance_ids: advancesToRestore.map((a) => a.id),
+      un_reversal_journal_id: unReversalId,
     };
     const payloadHash = await sha256Hex(canonicalJson(payload));
 
     await this.db.transaction(
       'rw',
-      [this.db.invoices, this.db.payments, this.db.advances, this.db.sync_events],
+      [
+        this.db.invoices,
+        this.db.payments,
+        this.db.advances,
+        this.db.journal_entries,
+        this.db.journal_lines,
+        this.db.sync_events,
+      ],
       async () => {
         await this.db.invoices.update(invoiceId, {
           deleted_at: null,
           deleted_reason: null,
+          deletion_reversal_journal_id: null,
           updated_at: now,
           entity_version: invoice.entity_version + 1,
         });
@@ -850,6 +1012,34 @@ export class InvoiceService {
             updated_at: now,
             entity_version: a.entity_version + 1,
           });
+        }
+        if (unReversal) {
+          await this.db.journal_entries.add(unReversal);
+          await this.db.journal_lines.bulkAdd(unReversalLines);
+          // Emit sync events so the un-mirror journal replicates through
+          // sync/restore. Missing these breaks bit-exact round-trip.
+          await writeEventInTx(this.db, {
+            business_id: invoice.business_id,
+            device_id: 'system',
+            entity_type: 'journal_entry',
+            entity_id: unReversal.id,
+            operation: 'posted' as SyncEvent['operation'],
+            entity_version: 1,
+            timestamp: now,
+            payload: unReversal,
+          });
+          for (const url of unReversalLines) {
+            await writeEventInTx(this.db, {
+              business_id: invoice.business_id,
+              device_id: 'system',
+              entity_type: 'journal_line',
+              entity_id: url.id,
+              operation: 'create' as SyncEvent['operation'],
+              entity_version: 1,
+              timestamp: now,
+              payload: url,
+            });
+          }
         }
         await writeEventInTx(this.db, {
           business_id: invoice.business_id,

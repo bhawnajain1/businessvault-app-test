@@ -4,6 +4,31 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 0.12.0 — 2026-08-26
+
+### Recycle Bin accounting (feedback_1_to_7.md §9)
+
+- **Bug fix (highest priority in feedback).** A soft-deleted (recycled)
+  invoice previously continued to contribute to Trial Balance, P&L, Balance
+  Sheet, GST Summary, and party ledgers. `deleteInvoice` now posts a mirror
+  journal entry against the invoice's original journal so the net effect on
+  every journal-derived report immediately drops to zero.
+- `restoreInvoice` posts an un-mirror (mirror-of-mirror) so the original
+  effect returns exactly once — repeated delete → restore cycles stay
+  balanced with no drift.
+- Journals themselves are NEVER mutated or removed; the audit chain and
+  event hash chain stay intact. Every mirror is a fresh `ref_type='reversal'`
+  entry with `reverses_id` pointing back at what it neutralises.
+- `gstSummary` and `computeReceivables` now filter recycled invoices — they
+  read the `invoices` table directly (not the journals), so an explicit
+  `deleted_at` filter was needed on those two surfaces.
+- New optional field `deletion_reversal_journal_id` on Invoice records the
+  mirror journal id while the invoice is in the Recycle Bin (null otherwise).
+- Dexie schema bumped to **v7**. Upgrade backfills any pre-existing
+  soft-deleted invoices by posting a mirror journal per row so on-disk data
+  from earlier versions immediately becomes consistent. Same-shape backfill
+  runs on snapshot restore via a new `v6 → v7` migration.
+
 ## 0.11.0 — 2026-08-26
 
 ### Round Off (feedback_1_to_7.md §1)

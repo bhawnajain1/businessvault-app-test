@@ -229,6 +229,7 @@ export const TABLE_SPECS: TableSpec[] = [
       { name: 'journal_entry_id', type: 'string' },
       { name: 'deleted_at', type: 'string_or_null' },
       { name: 'deleted_reason', type: 'string_or_null' },
+      { name: 'deletion_reversal_journal_id', type: 'string_or_null' },
       ...COMMON_AUDIT,
     ],
   },

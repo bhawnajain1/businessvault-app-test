@@ -7,7 +7,9 @@ import {
   STORES_V4,
   STORES_V5,
   STORES_V6,
+  STORES_V7,
 } from './schema';
+import { ulid } from 'ulid';
 import { pokeSyncWorker } from '../sync/pokeChannel';
 import type {
   Account,
@@ -127,6 +129,96 @@ export class BusinessVaultDB extends Dexie {
               row.pre_round_total_paise = (row.total_paise ?? 0) - (row.round_off_paise ?? 0);
             }
           });
+      });
+
+    // v7: feedback §9 Recycle Bin accounting fix. For every invoice that is
+    // ALREADY soft-deleted at upgrade time (deleted_at != null) but never had
+    // its journal reversed, post a mirror-of-original journal so it stops
+    // contributing to Trial Balance / P&L / Balance Sheet / GST summary /
+    // party ledger. New soft-deletes performed post-upgrade take the same
+    // path centrally inside InvoiceService.deleteInvoice.
+    //
+    // The upgrade posts journals via the same shape edit-reversal already
+    // uses (ref_type='reversal', reverses_id=<original journal>). Idempotent:
+    // if `deletion_reversal_journal_id` is already set on the row, skip it.
+    this.version(7)
+      .stores(STORES_V7)
+      .upgrade(async (tx) => {
+        const invoicesTable = tx.table('invoices');
+        const journalEntriesTable = tx.table('journal_entries');
+        const journalLinesTable = tx.table('journal_lines');
+
+        const staleDeleted = await invoicesTable
+          .toCollection()
+          .filter((r: { deleted_at?: string | null; deletion_reversal_journal_id?: string | null }) =>
+            r.deleted_at != null && r.deletion_reversal_journal_id == null,
+          )
+          .toArray();
+
+        for (const inv of staleDeleted as Array<{
+          id: string;
+          business_id: string;
+          invoice_number: string;
+          invoice_date: string;
+          journal_entry_id: string;
+          deleted_reason?: string | null;
+          entity_version: number;
+        }>) {
+          if (!inv.journal_entry_id) continue;
+          const originalJournal = await journalEntriesTable.get(inv.journal_entry_id);
+          if (!originalJournal) continue;
+          const originalLines = await journalLinesTable
+            .where('entry_id')
+            .equals(inv.journal_entry_id)
+            .toArray();
+          if (originalLines.length === 0) continue;
+
+          const now = new Date().toISOString();
+          const reversalId = ulid();
+          await journalEntriesTable.add({
+            id: reversalId,
+            business_id: inv.business_id,
+            entry_number: `JE-DEL-${inv.id}`,
+            entry_date: inv.invoice_date,
+            narration: `Recycle bin reversal (backfill v7) of ${inv.invoice_number}: ${inv.deleted_reason ?? 'deleted'}`,
+            ref_type: 'reversal',
+            ref_id: inv.id,
+            reversed_by_id: null,
+            reverses_id: inv.journal_entry_id,
+            total_debit_paise: (originalJournal as { total_credit_paise: number }).total_credit_paise,
+            total_credit_paise: (originalJournal as { total_debit_paise: number }).total_debit_paise,
+            posted: 1,
+            created_at: now,
+            updated_at: now,
+            entity_version: 1,
+          });
+          const mirrored = (originalLines as Array<{
+            business_id: string;
+            account_id: string;
+            debit_paise: number;
+            credit_paise: number;
+            party_type: string | null;
+            party_id: string | null;
+            description: string;
+          }>).map((l, idx) => ({
+            id: ulid(),
+            business_id: l.business_id,
+            entry_id: reversalId,
+            line_no: idx + 1,
+            account_id: l.account_id,
+            debit_paise: l.credit_paise,
+            credit_paise: l.debit_paise,
+            party_type: l.party_type,
+            party_id: l.party_id,
+            description: `Recycle bin reversal: ${l.description}`,
+          }));
+          await journalLinesTable.bulkAdd(mirrored);
+          await invoicesTable.update(inv.id, {
+            deletion_reversal_journal_id: reversalId,
+            updated_at: now,
+            entity_version: inv.entity_version + 1,
+          });
+        }
       });
 
     // After any sync_event insert commits, kick the sync worker so the write
