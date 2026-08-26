@@ -152,6 +152,11 @@ export async function gstSummary(
 
   for (const inv of invoices) {
     if (inv.status === 'cancelled') continue;
+    // §9: recycled invoices must not appear in GST summary. Their journals
+    // are reversed by deleteInvoice so TB / P&L / BS already drop them; the
+    // GST summary reads invoice line rows directly so it needs an explicit
+    // filter here.
+    if (inv.deleted_at) continue;
     const lines = await db.invoice_lines
       .where('[business_id+invoice_id]')
       .equals([businessId, inv.id])

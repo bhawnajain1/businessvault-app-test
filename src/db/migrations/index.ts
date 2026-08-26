@@ -128,6 +128,100 @@ const migration_v5_to_v6: Migration = {
   },
 };
 
+// v6 → v7: feedback §9 Recycle Bin accounting fix. Older snapshots may contain
+// invoices with deleted_at set but no matching reversal journal — those rows
+// were "recycled" but still contribute to TB/P&L/BS/GST. We backfill by
+// posting a mirror journal per stale soft-deleted invoice at snapshot-restore
+// time. Idempotent: if `deletion_reversal_journal_id` is already set, we
+// leave it alone. Any invoice whose original journal is missing in the
+// snapshot (rare, corrupted export) is left untouched — the boot-time
+// self-check will surface it.
+const migration_v6_to_v7: Migration = {
+  from: 6,
+  to: 7,
+  describe:
+    'v6 → v7: recycle-bin backfill — post mirror journal for pre-existing soft-deleted invoices',
+  apply(tables) {
+    const invoices = (tables.invoices ?? []) as Array<Record<string, unknown>>;
+    const journals = [...((tables.journal_entries ?? []) as Array<Record<string, unknown>>)];
+    const lines = [...((tables.journal_lines ?? []) as Array<Record<string, unknown>>)];
+    const linesByEntry = new Map<string, Array<Record<string, unknown>>>();
+    for (const l of lines) {
+      const eid = typeof l.entry_id === 'string' ? l.entry_id : '';
+      if (!eid) continue;
+      const arr = linesByEntry.get(eid) ?? [];
+      arr.push(l);
+      linesByEntry.set(eid, arr);
+    }
+    const journalById = new Map<string, Record<string, unknown>>();
+    for (const j of journals) {
+      const jid = typeof j.id === 'string' ? j.id : '';
+      if (jid) journalById.set(jid, j);
+    }
+
+    const newJournals: Array<Record<string, unknown>> = [];
+    const newLines: Array<Record<string, unknown>> = [];
+    const patchedInvoices = invoices.map((r) => {
+      const deleted = r.deleted_at;
+      const reversalId = r.deletion_reversal_journal_id;
+      if (deleted == null || reversalId != null) return r;
+      const originalJournalId = typeof r.journal_entry_id === 'string' ? r.journal_entry_id : '';
+      if (!originalJournalId) return r;
+      const originalJ = journalById.get(originalJournalId);
+      const origLines = linesByEntry.get(originalJournalId) ?? [];
+      if (!originalJ || origLines.length === 0) return r;
+
+      const invId = typeof r.id === 'string' ? r.id : '';
+      const invBiz = typeof r.business_id === 'string' ? r.business_id : '';
+      const invDate = typeof r.invoice_date === 'string' ? r.invoice_date : '';
+      const invNum = typeof r.invoice_number === 'string' ? r.invoice_number : invId;
+      const reason = typeof r.deleted_reason === 'string' ? r.deleted_reason : 'deleted';
+      // Deterministic id so re-running the migration on the same snapshot
+      // yields identical output (helps snapshot-diff / debugging).
+      const newRevId = `mig-v7-${invId}`;
+      newJournals.push({
+        id: newRevId,
+        business_id: invBiz,
+        entry_number: `JE-DEL-${invId}`,
+        entry_date: invDate,
+        narration: `Recycle bin reversal (backfill v7) of ${invNum}: ${reason}`,
+        ref_type: 'reversal',
+        ref_id: invId,
+        reversed_by_id: null,
+        reverses_id: originalJournalId,
+        total_debit_paise: originalJ.total_credit_paise ?? 0,
+        total_credit_paise: originalJ.total_debit_paise ?? 0,
+        posted: 1,
+        created_at: deleted,
+        updated_at: deleted,
+        entity_version: 1,
+      });
+      for (let idx = 0; idx < origLines.length; idx++) {
+        const l = origLines[idx];
+        newLines.push({
+          id: `mig-v7-l-${invId}-${idx + 1}`,
+          business_id: l.business_id,
+          entry_id: newRevId,
+          line_no: idx + 1,
+          account_id: l.account_id,
+          debit_paise: l.credit_paise ?? 0,
+          credit_paise: l.debit_paise ?? 0,
+          party_type: l.party_type ?? null,
+          party_id: l.party_id ?? null,
+          description: `Recycle bin reversal: ${typeof l.description === 'string' ? l.description : ''}`,
+        });
+      }
+      return { ...r, deletion_reversal_journal_id: newRevId };
+    });
+    return {
+      ...tables,
+      invoices: patchedInvoices,
+      journal_entries: [...journals, ...newJournals],
+      journal_lines: [...lines, ...newLines],
+    };
+  },
+};
+
 export const MIGRATIONS: Migration[] = [
   migration_v0_to_v1,
   migration_v1_to_v2,
@@ -135,6 +229,7 @@ export const MIGRATIONS: Migration[] = [
   migration_v3_to_v4,
   migration_v4_to_v5,
   migration_v5_to_v6,
+  migration_v6_to_v7,
 ];
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;

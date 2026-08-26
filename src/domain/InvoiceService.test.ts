@@ -4,6 +4,9 @@ import { ulid } from 'ulid';
 import { BusinessVaultDB } from '../db/database';
 import type { Account, Business, Customer, Item, ItemStock, Warehouse } from '../db/types';
 import { InvoiceService } from './InvoiceService';
+import { trialBalance, profitAndLoss, balanceSheet } from './AccountingService';
+import { gstSummary } from './gst';
+import { computeReceivables } from './partyLedger';
 
 let db: BusinessVaultDB;
 let service: InvoiceService;
@@ -669,6 +672,231 @@ describe('InvoiceService.deleteInvoice / restoreInvoice', () => {
       .equals([businessId, 'invoice', inv.id])
       .toArray();
     expect(events.some((e) => e.operation === 'deleted')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Recycle Bin accounting (feedback_1_to_7.md §9)
+// ---------------------------------------------------------------------------
+// Core invariant: ACTIVE invoice → +X effect on all financial reports;
+// RECYCLED invoice → 0 effect; RESTORED → +X again. Journals stay in the
+// database forever — the effect is neutralised by mirror-journal reversal,
+// not by mutation. The tests below verify each surface: journal reversal,
+// TB balance, P&L, Balance Sheet, GST summary, and receivables ledger.
+// ---------------------------------------------------------------------------
+
+describe('InvoiceService — Recycle Bin accounting (feedback §9)', () => {
+  it('deleteInvoice posts a mirror journal so TB / P&L / BS drop the invoice', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-REC-1',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    // Baseline: TB records the invoice postings.
+    const tbBefore = await trialBalance(businessId, new Date('2026-08-31'), { db });
+    const receivablesBefore = tbBefore.find((r) => r.code === '1200');
+    const revenueBefore = tbBefore.find((r) => r.code === '4000');
+    expect(receivablesBefore?.balance_paise).toBe(inv.total_paise);
+    expect(revenueBefore?.balance_paise).toBe(inv.taxable_paise);
+
+    // Recycle.
+    await service.deleteInvoice(inv.id, 'wrong entry');
+    const row = await db.invoices.get(inv.id);
+    expect(row?.deleted_at).toBeTruthy();
+    expect(row?.deletion_reversal_journal_id).toBeTruthy();
+
+    // Original journal + all its lines still exist (audit intact).
+    const original = await db.journal_entries.get(inv.journal_entry_id);
+    expect(original).toBeDefined();
+    const originalLineCount = await db.journal_lines
+      .where('entry_id')
+      .equals(inv.journal_entry_id)
+      .count();
+    expect(originalLineCount).toBeGreaterThan(0);
+
+    // Mirror journal exists with reverses_id pointing back at the original.
+    const mirror = await db.journal_entries.get(row!.deletion_reversal_journal_id!);
+    expect(mirror).toBeDefined();
+    expect(mirror?.reverses_id).toBe(inv.journal_entry_id);
+    expect(mirror?.ref_type).toBe('reversal');
+    expect(mirror?.ref_id).toBe(inv.id);
+    expect(mirror?.total_debit_paise).toBe(original!.total_credit_paise);
+    expect(mirror?.total_credit_paise).toBe(original!.total_debit_paise);
+
+    // Trial balance now nets to zero for the affected accounts.
+    const tbAfter = await trialBalance(businessId, new Date('2026-08-31'), { db });
+    const receivablesAfter = tbAfter.find((r) => r.code === '1200');
+    const revenueAfter = tbAfter.find((r) => r.code === '4000');
+    expect(receivablesAfter?.balance_paise).toBe(0);
+    expect(revenueAfter?.balance_paise).toBe(0);
+
+    // TB always balances (fundamental invariant).
+    const sumDr = tbAfter.reduce((s, r) => s + r.debits_paise, 0);
+    const sumCr = tbAfter.reduce((s, r) => s + r.credits_paise, 0);
+    expect(sumDr).toBe(sumCr);
+
+    // P&L: revenue is back to zero.
+    const pl = await profitAndLoss(
+      businessId,
+      new Date('2026-04-01'),
+      new Date('2026-08-31'),
+      { db },
+    );
+    expect(pl.revenue_paise).toBe(0);
+
+    // Balance Sheet still balances.
+    const bs = await balanceSheet(businessId, new Date('2026-08-31'), {
+      db,
+      financialYearStart: new Date('2026-04-01'),
+    });
+    expect(bs.balanced).toBe(true);
+    expect(bs.difference_paise).toBe(0);
+  });
+
+  it('deleted invoice drops from GST summary and receivables ledger', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-REC-GST',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    // Baseline: GST summary sees it.
+    const gstBefore = await gstSummary(
+      businessId,
+      new Date('2026-08-01'),
+      new Date('2026-08-31'),
+      { db },
+    );
+    const slab18Before = gstBefore.find((r) => r.slab === 18);
+    expect(slab18Before?.taxable_paise).toBeGreaterThan(0);
+
+    // Baseline: receivables ledger has this customer's outstanding.
+    const invsBefore = await db.invoices.where('business_id').equals(businessId).toArray();
+    const custsBefore = await db.customers.where('business_id').equals(businessId).toArray();
+    const rBefore = computeReceivables(invsBefore, '2026-08-31', [], custsBefore);
+    expect(rBefore.totals.outstanding_paise).toBe(inv.total_paise);
+
+    // Recycle.
+    await service.deleteInvoice(inv.id, 'wrong customer');
+
+    // GST summary drops the taxable + tax contribution.
+    const gstAfter = await gstSummary(
+      businessId,
+      new Date('2026-08-01'),
+      new Date('2026-08-31'),
+      { db },
+    );
+    const slab18After = gstAfter.find((r) => r.slab === 18);
+    expect(slab18After?.taxable_paise).toBe(0);
+    expect(slab18After?.cgst_paise).toBe(0);
+    expect(slab18After?.sgst_paise).toBe(0);
+
+    // Receivables ledger drops the customer's outstanding.
+    const invsAfter = await db.invoices.where('business_id').equals(businessId).toArray();
+    const rAfter = computeReceivables(invsAfter, '2026-08-31', [], custsBefore);
+    expect(rAfter.totals.outstanding_paise).toBe(0);
+    expect(rAfter.perInvoice.filter((row) => row.invoice_id === inv.id)).toHaveLength(0);
+  });
+
+  it('restoreInvoice re-activates the original effect exactly once', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-REC-RESTORE',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    await service.deleteInvoice(inv.id, 'oops');
+    await service.restoreInvoice(inv.id);
+
+    const row = await db.invoices.get(inv.id);
+    expect(row?.deleted_at).toBeNull();
+    expect(row?.deletion_reversal_journal_id).toBeNull();
+
+    // TB: receivables + revenue back to their original amounts (net of
+    // deletion-mirror + restore-mirror = zero delta from the original).
+    const tb = await trialBalance(businessId, new Date('2026-08-31'), { db });
+    const receivables = tb.find((r) => r.code === '1200');
+    const revenue = tb.find((r) => r.code === '4000');
+    expect(receivables?.balance_paise).toBe(inv.total_paise);
+    expect(revenue?.balance_paise).toBe(inv.taxable_paise);
+
+    // Three journals exist for this invoice: original + deletion-mirror + restore-mirror.
+    const relatedEntries = await db.journal_entries
+      .where('business_id')
+      .equals(businessId)
+      .toArray();
+    const forThisInvoice = relatedEntries.filter(
+      (e) =>
+        e.id === inv.journal_entry_id ||
+        (e.ref_type === 'reversal' && e.ref_id === inv.id),
+    );
+    expect(forThisInvoice).toHaveLength(3);
+  });
+
+  it('survives repeated delete/restore cycles with balanced TB throughout', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-REC-CYCLE',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    for (let i = 0; i < 3; i++) {
+      await service.deleteInvoice(inv.id, `cycle-${i}-delete`);
+      let tb = await trialBalance(businessId, new Date('2026-08-31'), { db });
+      let sumDr = tb.reduce((s, r) => s + r.debits_paise, 0);
+      let sumCr = tb.reduce((s, r) => s + r.credits_paise, 0);
+      expect(sumDr).toBe(sumCr);
+      expect(tb.find((r) => r.code === '1200')?.balance_paise).toBe(0);
+
+      await service.restoreInvoice(inv.id);
+      tb = await trialBalance(businessId, new Date('2026-08-31'), { db });
+      sumDr = tb.reduce((s, r) => s + r.debits_paise, 0);
+      sumCr = tb.reduce((s, r) => s + r.credits_paise, 0);
+      expect(sumDr).toBe(sumCr);
+      expect(tb.find((r) => r.code === '1200')?.balance_paise).toBe(inv.total_paise);
+    }
+
+    // Six new entries added across three cycles (delete+restore each): so
+    // total for this invoice is original + 6 mirrors = 7 entries. Order matters
+    // because the entry_date is the invoice_date for all mirrors — TB reads
+    // them the same day regardless.
+    const forThisInvoice = (
+      await db.journal_entries.where('business_id').equals(businessId).toArray()
+    ).filter(
+      (e) =>
+        e.id === inv.journal_entry_id ||
+        (e.ref_type === 'reversal' && e.ref_id === inv.id),
+    );
+    expect(forThisInvoice).toHaveLength(7);
   });
 });
 

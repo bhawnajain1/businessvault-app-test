@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const DB_NAME = 'businessvault';
 
@@ -143,4 +143,15 @@ export const STORES_V5: Record<string, string> = {
 // definitionally consistent with the existing header math.
 export const STORES_V6: Record<string, string> = {
   ...STORES_V5,
+};
+
+// v7: feedback §9 Recycle Bin accounting fix. Adds
+// `deletion_reversal_journal_id` on invoices — the id of the mirror journal
+// entry posted when the invoice is soft-deleted (so the recycled invoice no
+// longer contributes to TB/P&L/BS/GST/party ledgers). No new index needed;
+// the field is only consulted from restoreInvoice for the specific row. Any
+// pre-v7 soft-deleted invoices are backfilled at upgrade time by posting a
+// deletion reversal for each one.
+export const STORES_V7: Record<string, string> = {
+  ...STORES_V6,
 };
