@@ -120,6 +120,28 @@ describe('buildSnapshotInput', () => {
     expect(handle.asOf).toBe('2026-08-21');
   });
 
+  it('includes only the selected business profile in businesses.csv', async () => {
+    await db.businesses.add({
+      ...(await db.businesses.get(BID))!,
+      id: 'biz_other',
+      name: 'Other Traders',
+      legal_name: 'Other Traders Pvt Ltd',
+      gstin: '27AAECO1234H1Z5',
+      pan: 'AAECO1234H',
+      email: 'private@other.example',
+    });
+
+    const input = await buildSnapshotInput(db, BID, BNAME, 'ondemand', '2026-08-21');
+    const businessesFile = input.files.find((f) => f.name === 'businesses.csv');
+
+    expect(businessesFile).toBeDefined();
+    expect(businessesFile!.rowCount).toBe(1);
+    const csv = await businessesFile!.content.text();
+    expect(csv).toContain(BID);
+    expect(csv).not.toContain('biz_other');
+    expect(csv).not.toContain('private@other.example');
+  });
+
   it('§20 manifest carries applicationVersion, schemaVersion, backupFormatVersion', async () => {
     const input = await buildSnapshotInput(db, BID, BNAME, 'ondemand', '2026-08-26');
     expect(input.manifest.schemaVersion).toBeTypeOf('number');

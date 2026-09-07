@@ -623,6 +623,56 @@ describe('rebuildFromDrive', () => {
     expect(await db.journal_entries.count()).toBe(je);
   });
 
+  it('replaces only the selected business and preserves other local businesses', async () => {
+    const otherBusinessId = 'biz_other';
+    await db.businesses.add({
+      ...business,
+      id: otherBusinessId,
+      name: 'Other Traders',
+      legal_name: 'Other Traders Pvt Ltd',
+    });
+    await db.customers.add({
+      ...cust1,
+      id: 'cust_other',
+      business_id: otherBusinessId,
+      name: 'Other Customer',
+    });
+    await db.sync_events.add({
+      event_id: 'evt_other_unshipped',
+      business_id: otherBusinessId,
+      device_id: 'device_other',
+      entity_type: 'customer',
+      entity_id: 'cust_other',
+      operation: 'created',
+      entity_version: 1,
+      timestamp: '2026-08-21T09:00:00.000Z',
+      payload: { id: 'cust_other' },
+      payload_hash: 'otherhash',
+      previous_hash: 'genesis',
+      sync_status: 'LOCAL_ONLY',
+      sync_attempts: 0,
+      last_error: null,
+      synced_at: null,
+      journal_file: null,
+    });
+
+    const report = await rebuildFromDrive(provider, {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+
+    expect(await db.businesses.get(otherBusinessId)).toBeDefined();
+    expect(await db.customers.get('cust_other')).toMatchObject({
+      business_id: otherBusinessId,
+      name: 'Other Customer',
+    });
+    expect(await db.sync_events.get('evt_other_unshipped')).toBeDefined();
+    expect(await db.businesses.get(BID)).toMatchObject({ name: 'Acme Traders' });
+    expect(await db.customers.where('business_id').equals(BID).count()).toBe(2);
+    expect((await db.businesses.count())).toBe(2);
+    expect(report.counts.businesses).toBe(1);
+  });
+
   it('refuses to run when the target DB has unshipped local events', async () => {
     // Seed one unshipped sync_event for this business into the target DB.
     // Restore must throw UnshippedEventsError instead of wiping.

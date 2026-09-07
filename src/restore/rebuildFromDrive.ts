@@ -173,16 +173,29 @@ export async function rebuildFromDrive(
   opts: RebuildOptions,
 ): Promise<RestoreReport> {
   const progress = opts.onProgress ?? (() => undefined);
+  const restoreStartedAt = Date.now();
+  log.info('restore.start', 'restore: started', {
+    providerKind: opts.providerConfig.kind,
+    confirmDataLoss: opts.confirmDataLoss === true,
+  });
 
   // 1. connect
   progress('Connecting to storage provider', 5);
   if (!opts.preConnectedProvider) {
     await provider.connect(opts.providerConfig);
   }
+  log.info('restore.provider.connected', 'restore: storage provider connected', {
+    providerKind: opts.providerConfig.kind,
+    durationMs: Date.now() - restoreStartedAt,
+  });
 
   // 2. locate BusinessVault and pick a business
   progress('Locating BusinessVault folder', 10);
   const businesses = await discoverBusinesses(provider);
+  log.info('restore.businesses.discovered', 'restore: businesses discovered', {
+    count: businesses.length,
+    businessIds: businesses.map((business) => business.businessId),
+  });
   if (businesses.length === 0) {
     throw new Error('No BusinessVault/<business> folder found on the provider');
   }
@@ -197,6 +210,11 @@ export async function rebuildFromDrive(
     }
     selected = await opts.pickBusiness({ businesses });
   }
+  log.info('restore.business.selected', 'restore: business selected', {
+    businessId: selected.businessId,
+    schemaVersion: selected.schemaVersion,
+    candidateCount: businesses.length,
+  });
 
   // Bind the provider to the selected business so subsequent journal/snapshot
   // reads know which folder to look in.
@@ -218,11 +236,18 @@ export async function rebuildFromDrive(
   const integrity = await provider.verifyIntegrity();
   const checksumsOk = integrity.ok;
   if (!checksumsOk) {
+    log.error('restore.integrity.failed', 'restore: backup integrity verification failed', {
+      businessId: selected.businessId,
+      issues: integrity.issues,
+    });
     throw new BackupIntegrityError(
       'Backup integrity verification failed',
       integrity.issues,
     );
   }
+  log.info('restore.integrity.passed', 'restore: backup integrity verified', {
+    businessId: selected.businessId,
+  });
 
   // 4a. Guard against destroying unshipped local work. Any sync_events row for
   // this business whose sync_status != 'SYNCED' represents user work that
@@ -233,7 +258,18 @@ export async function rebuildFromDrive(
   // without warning is data-loss. See "restore-from-backup shows empty data"
   // regression from bhawna business (folder had only the 51 seed events).
   const unshipped = await summarizeUnshipped(opts.db, selected.businessId, selected.businessName);
+  log.info('restore.preflight.unshipped', 'restore: unshipped-event preflight complete', {
+    businessId: selected.businessId,
+    total: unshipped.total,
+    byStatus: unshipped.byStatus,
+    byEntityType: unshipped.byEntityType,
+    confirmed: opts.confirmDataLoss === true,
+  });
   if (unshipped.total > 0 && !opts.confirmDataLoss) {
+    log.warn('restore.preflight.blocked', 'restore: blocked to preserve unshipped work', {
+      businessId: selected.businessId,
+      total: unshipped.total,
+    });
     throw new UnshippedEventsError(unshipped);
   }
 
@@ -275,6 +311,20 @@ export async function rebuildFromDrive(
     } else {
       snapshotTables = parsedTables;
     }
+    log.info('restore.snapshot.loaded', 'restore: snapshot loaded', {
+      businessId: selected.businessId,
+      kind: snapshotHandle.kind,
+      asOf: snapshotHandle.asOf,
+      fileCount: snap.files.length,
+      rowCount: Object.values(snapshotTables).reduce((sum, rows) => sum + rows.length, 0),
+      sourceSchemaVersion: snapSchema,
+      targetSchemaVersion: CURRENT_SCHEMA_VERSION,
+      migrated: migratedFrom !== undefined,
+    });
+  } else {
+    log.warn('restore.snapshot.missing', 'restore: no verified snapshot found; journal replay only', {
+      businessId: selected.businessId,
+    });
   }
 
   // Read the journal BEFORE clearing local state so we can bail out cleanly
@@ -285,6 +335,11 @@ export async function rebuildFromDrive(
   const events = await provider.readJournalEvents({
     businessId: selected.businessId,
     sinceEventId,
+  });
+  log.info('restore.journal.loaded', 'restore: journal events loaded', {
+    businessId: selected.businessId,
+    eventCount: events.length,
+    sinceEventId: sinceEventId ?? null,
   });
 
   // Zero snapshots + zero journal events = a backup folder that was never
@@ -312,31 +367,46 @@ export async function rebuildFromDrive(
   let replayed = 0;
   let unhandled = 0;
   try {
-    // Bulk-insert snapshot into Dexie under ONE transaction. If anything throws,
-    // Dexie rolls back leaving the database in its pre-restore state (which
-    // rebuildFromDrive already cleared at the head of the transaction — so on
-    // failure the DB is empty and the caller can retry).
+    // Replace only the selected business under one transaction. Other local
+    // businesses may have independent unsynced work and must remain untouched.
     progress('Rebuilding local database', 55);
     await opts.db.transaction(
       'rw',
       tableNames(),
       async () => {
         for (const spec of TABLE_SPECS) {
-          // Clear + repopulate each table. Even if the snapshot lacks the file
-          // we clear — restore is a full replacement.
           const table = (opts.db as unknown as Record<string, {
-            clear(): Promise<void>;
+            delete(key: string): Promise<void>;
+            where(k: string): { equals(v: unknown): { delete(): Promise<number> } };
             bulkPut(rows: unknown[]): Promise<unknown>;
           }>)[spec.store];
           if (!table) continue;
-          await table.clear();
           const rows = snapshotTables[spec.store];
+          let deleted: number;
+          if (spec.store === 'businesses') {
+            deleted = (await opts.db.businesses.get(selected.businessId)) ? 1 : 0;
+            await opts.db.businesses.delete(selected.businessId);
+          } else {
+            deleted = await table.where('business_id').equals(selected.businessId).delete();
+          }
           if (rows && rows.length > 0) {
             await table.bulkPut(rows);
           }
+          log.debug('restore.snapshot.table-replaced', 'restore: selected business table replaced', {
+            businessId: selected.businessId,
+            store: spec.store,
+            deletedRows: deleted,
+            insertedRows: rows?.length ?? 0,
+          });
         }
-        // Truncate the sync_events store too — restore starts a fresh journal.
-        await opts.db.sync_events.clear();
+        const deletedEvents = await opts.db.sync_events
+          .where('business_id')
+          .equals(selected.businessId)
+          .delete();
+        log.info('restore.snapshot.committed', 'restore: selected business snapshot committed', {
+          businessId: selected.businessId,
+          deletedSyncEvents: deletedEvents,
+        });
       },
     );
 
@@ -357,6 +427,13 @@ export async function rebuildFromDrive(
             if (result === 'applied') replayed++;
             else unhandled++;
           } catch (err) {
+            log.warn('restore.replay.event-failed', 'restore: journal event replay failed', {
+              businessId: selected.businessId,
+              eventId: evt.event_id,
+              entityType: evt.entity_type,
+              operation: evt.operation,
+              error: err,
+            });
             diagnostics.push(
               `event ${evt.event_id} (${evt.entity_type}:${evt.operation}) failed: ${(err as Error).message}`,
             );
@@ -364,11 +441,21 @@ export async function rebuildFromDrive(
         }
       },
     );
+    log.info('restore.replay.complete', 'restore: journal replay complete', {
+      businessId: selected.businessId,
+      eventCount: events.length,
+      replayed,
+      unhandled,
+      failed: diagnostics.length,
+    });
 
     // 7. rebuild derived caches
     progress('Rebuilding derived tables', 80);
     await rebuildItemStockFromMovements(opts.db, selected.businessId);
     await rebuildInvoicePaidBalance(opts.db, selected.businessId);
+    log.info('restore.derived.complete', 'restore: derived caches rebuilt', {
+      businessId: selected.businessId,
+    });
   } finally {
     dbWithFlag.__bvSuppressLowStock = false;
   }
@@ -444,6 +531,19 @@ export async function rebuildFromDrive(
   // and every domain page renders the onboarding wizard — exactly the state
   // testing surfaced after a successful-looking restore.
   await setCurrentBusinessId(selected.businessId);
+
+  log.info('restore.complete', 'restore: completed', {
+    businessId: selected.businessId,
+    durationMs: Date.now() - restoreStartedAt,
+    eventsReplayed: replayed,
+    unhandledEvents: unhandled,
+    checksumsOk,
+    accountingBalanced,
+    inventoryConsistent,
+    gstReconciled,
+    diagnosticIssueCount: issues.length,
+    counts,
+  });
 
   progress('Restore complete', 100);
 
@@ -855,7 +955,7 @@ async function countTables(
       continue;
     }
     if (spec.store === 'businesses') {
-      counts[spec.store] = await db.businesses.count();
+      counts[spec.store] = (await db.businesses.get(businessId)) ? 1 : 0;
     } else {
       counts[spec.store] = await table
         .where('business_id')

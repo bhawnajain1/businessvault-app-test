@@ -4,6 +4,21 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.6 — 2026-09-07
+
+### Fixed
+
+- **Business-scoped backup and restore.** Snapshots now export only the selected business profile instead of leaking every local business into `businesses.csv`. Restoring a business replaces only that business's rows and sync events, preserving every other local business and its unshipped work.
+
+### Diagnostics
+
+- Added structured restore lifecycle logs for provider connection, business discovery and selection, integrity and unshipped-work preflight, snapshot and journal loading, per-table replacement counts, replay failures and totals, derived-cache rebuilds, validation results, and final duration/counts.
+- Added per-table snapshot serialization logs with row count, byte count, and duration to make large or stalled backups diagnosable from exported debug logs.
+
+### Tests
+
+- Added multi-business regression coverage proving one business cannot enter another business's snapshot and restoring one business preserves another business's profile, records, and unshipped sync event.
+
 ## 1.0.5 — 2026-09-07
 
 ### Added

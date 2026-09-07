@@ -47,6 +47,7 @@ export async function buildSnapshotInput(
   });
 
   for (const spec of TABLE_SPECS) {
+    const tableStartedAt = Date.now();
     const table = (db as unknown as Record<
       string,
       {
@@ -58,7 +59,10 @@ export async function buildSnapshotInput(
     let rows: Record<string, unknown>[] = [];
     if (table) {
       if (spec.store === 'businesses') {
-        rows = (await db.businesses.toArray()) as unknown as Record<string, unknown>[];
+        const business = await db.businesses.get(businessId);
+        rows = business
+          ? [business as unknown as Record<string, unknown>]
+          : [];
       } else {
         rows = (await table
           .where('business_id')
@@ -113,6 +117,14 @@ export async function buildSnapshotInput(
       sha256: await sha256Hex(csv),
     });
     counts[spec.file] = prepared.length;
+    log.debug('snapshot.build.table', 'snapshot: table serialized', {
+      businessId,
+      store: spec.store,
+      file: spec.file,
+      rowCount: prepared.length,
+      byteCount: bytes.byteLength,
+      durationMs: Date.now() - tableStartedAt,
+    });
   }
 
   log.info('snapshot.build.success', 'snapshot: CSV assembly complete', {
