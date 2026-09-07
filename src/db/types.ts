@@ -752,6 +752,9 @@ export interface SalesReturnItem {
   igst_paise: number;
   cess_paise: number;
   line_total_paise: number;
+  // Exact share of the original sale's COGS reversed by this return line.
+  // Optional for pre-1.0.9 rows, which did not post a COGS reversal.
+  cogs_paise?: number;
 }
 
 // Cache: sum(qty_micros over financially active sales_return_items) per
