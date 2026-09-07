@@ -4,6 +4,22 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.8 — 2026-09-07
+
+### Fixed
+
+- **Complete restore settlement rebuild.** Restore now derives supplier bill `paid_paise`, `balance_paise`, and status from payment allocations and supplier advance applications, matching the existing invoice rebuild.
+- **Sales Return balance recovery.** Active Sales Returns are included when rebuilding invoice balances, while cancelled or deleted returns are excluded. Legacy returns without the persisted settlement split use their total less customer credit.
+- **Deterministic inventory valuation.** Restore now replays stock movements in their persisted insertion order using the application's moving-average inbound-cost rule instead of treating the last non-zero movement cost as the average. Existing cache rows with no backing movements are removed.
+
+### Diagnostics
+
+- Added structured, metadata-only summaries for rebuilt inventory rows and document settlement targets.
+
+### Tests
+
+- Added restore coverage for supplier payments and advance applications, Sales Return balance reductions, moving-average inventory cost, and stale stock-cache removal.
+
 ## 1.0.7 — 2026-09-07
 
 ### Fixed

@@ -15,7 +15,7 @@
  *   5. load latest verified snapshot → parseCsv → migrate to current schema
  *      → bulk-insert into Dexie in ONE transaction (all-or-nothing)
  *   6. replay journal events after snapshot's checkpoint, idempotent handlers
- *   7. rebuild derived caches (item_stock qty; invoice paid/balance)
+ *   7. rebuild derived caches (item_stock qty/cost; invoice/purchase settlement)
  *   8. accountingSelfCheck + verifyInventoryIdentity + GST reconciliation
  *   9. emit RECOVERY_DIAGNOSTIC_REPORT on any inconsistency — never silently
  *      modify accounting records
@@ -452,7 +452,7 @@ export async function rebuildFromDrive(
     // 7. rebuild derived caches
     progress('Rebuilding derived tables', 80);
     await rebuildItemStockFromMovements(opts.db, selected.businessId);
-    await rebuildInvoicePaidBalance(opts.db, selected.businessId);
+    await rebuildDocumentSettlementBalances(opts.db, selected.businessId);
     log.info('restore.derived.complete', 'restore: derived caches rebuilt', {
       businessId: selected.businessId,
     });
@@ -730,7 +730,11 @@ async function rebuildItemStockFromMovements(
   const movements = await db.stock_movements
     .filter((m) => m.business_id === businessId)
     .toArray();
-  // Sum qty per (item, warehouse). Cost = last non-zero unit_cost_paise seen.
+
+  // Reapply the same moving-average rule used by PurchaseService. Outbound
+  // movements change quantity only; positive purchase/opening/adjustment
+  // movements add a cost layer. Reversals and returns preserve the current
+  // average because their paired outbound movement already carries its cost.
   const byKey = new Map<string, {
     item_id: string;
     warehouse_id: string;
@@ -739,18 +743,39 @@ async function rebuildItemStockFromMovements(
   }>();
   for (const m of movements) {
     const key = `${businessId}:${m.item_id}:${m.warehouse_id}`;
-    const cur = byKey.get(key) ?? {
+    const existing = byKey.get(key);
+    const cur = existing ?? {
       item_id: m.item_id,
       warehouse_id: m.warehouse_id,
       qty_micros: 0,
       avg_cost_paise: 0,
     };
-    cur.qty_micros += m.qty_micros;
-    if (m.unit_cost_paise > 0) cur.avg_cost_paise = m.unit_cost_paise;
+    const oldQty = cur.qty_micros;
+    const newQty = oldQty + m.qty_micros;
+    if (!existing && m.qty_micros !== 0) {
+      cur.avg_cost_paise = m.unit_cost_paise;
+    }
+    const addsCost =
+      m.qty_micros > 0 &&
+      (m.movement_type === 'purchase' ||
+        m.movement_type === 'opening' ||
+        m.movement_type === 'adjustment');
+    if (
+      addsCost &&
+      newQty > 0 &&
+      (oldQty > 0 || cur.avg_cost_paise === 0)
+    ) {
+      cur.avg_cost_paise = Math.round(
+        (oldQty * cur.avg_cost_paise + m.qty_micros * m.unit_cost_paise) /
+          newQty,
+      );
+    }
+    cur.qty_micros = newQty;
     byKey.set(key, cur);
   }
   const now = new Date().toISOString();
   await db.transaction('rw', db.item_stock, async () => {
+    await db.item_stock.where('business_id').equals(businessId).delete();
     for (const [key, v] of byKey.entries()) {
       await db.item_stock.put({
         id: key,
@@ -763,13 +788,22 @@ async function rebuildItemStockFromMovements(
       });
     }
   });
+  log.info('restore.derived.inventory', 'restore: inventory cache rebuilt', {
+    businessId,
+    movementCount: movements.length,
+    stockRowCount: byKey.size,
+  });
 }
 
-async function rebuildInvoicePaidBalance(
+async function rebuildDocumentSettlementBalances(
   db: BusinessVaultDB,
   businessId: string,
 ): Promise<void> {
   const invoices = await db.invoices
+    .where('business_id')
+    .equals(businessId)
+    .toArray();
+  const purchases = await db.purchases
     .where('business_id')
     .equals(businessId)
     .toArray();
@@ -778,6 +812,10 @@ async function rebuildInvoicePaidBalance(
     .equals(businessId)
     .toArray();
   const advances = await db.advances
+    .where('business_id')
+    .equals(businessId)
+    .toArray();
+  const salesReturns = await db.sales_returns
     .where('business_id')
     .equals(businessId)
     .toArray();
@@ -791,18 +829,25 @@ async function rebuildInvoicePaidBalance(
   // Skip soft-deleted payments so a deleted payment doesn't zero out the
   // ledger; invoice:delete cascades already mark those.
   const paidByInvoice = new Map<string, number>();
+  const paidByPurchase = new Map<string, number>();
   for (const p of payments) {
     if (p.deleted_at) continue;
     const allocs = Array.isArray(p.allocations) ? p.allocations : [];
     for (const a of allocs) {
-      if (!a.invoice_id) continue;
-      paidByInvoice.set(
-        a.invoice_id,
-        (paidByInvoice.get(a.invoice_id) ?? 0) + a.amount_paise,
-      );
+      if (a.invoice_id) {
+        paidByInvoice.set(
+          a.invoice_id,
+          (paidByInvoice.get(a.invoice_id) ?? 0) + a.amount_paise,
+        );
+      } else if (a.bill_id) {
+        paidByPurchase.set(
+          a.bill_id,
+          (paidByPurchase.get(a.bill_id) ?? 0) + a.amount_paise,
+        );
+      }
     }
   }
-  // Advance applications also count against invoice paid_paise.
+  // Advance applications also count against invoice/purchase paid_paise.
   // AdvanceService.applyAdvance mutates invoice.paid_paise/balance_paise
   // /status in-DB but only emits an advance:updated event — no invoice
   // event carrying the post-apply state. Without this pass the restored
@@ -811,23 +856,49 @@ async function rebuildInvoicePaidBalance(
     if (adv.deleted_at) continue;
     const apps = Array.isArray(adv.applications) ? adv.applications : [];
     for (const a of apps) {
-      if (!a.invoice_id) continue;
-      paidByInvoice.set(
-        a.invoice_id,
-        (paidByInvoice.get(a.invoice_id) ?? 0) + a.amount_paise,
-      );
+      if (a.invoice_id) {
+        paidByInvoice.set(
+          a.invoice_id,
+          (paidByInvoice.get(a.invoice_id) ?? 0) + a.amount_paise,
+        );
+      } else if (a.bill_id) {
+        paidByPurchase.set(
+          a.bill_id,
+          (paidByPurchase.get(a.bill_id) ?? 0) + a.amount_paise,
+        );
+      }
     }
   }
 
-  await db.transaction('rw', db.invoices, async () => {
+  const returnReductionByInvoice = new Map<string, number>();
+  for (const salesReturn of salesReturns) {
+    if (salesReturn.status !== 'posted' || salesReturn.deleted_at) continue;
+    const balanceReduction =
+      salesReturn.apply_to_balance_paise ??
+      salesReturn.total_paise - (salesReturn.customer_credit_paise ?? 0);
+    returnReductionByInvoice.set(
+      salesReturn.original_invoice_id,
+      (returnReductionByInvoice.get(salesReturn.original_invoice_id) ?? 0) +
+        balanceReduction,
+    );
+  }
+
+  await db.transaction('rw', [db.invoices, db.purchases], async () => {
     for (const inv of invoices) {
       const paid = paidByInvoice.get(inv.id) ?? 0;
-      const balance = inv.total_paise - paid;
+      const balanceBeforeReturns = inv.total_paise - paid;
+      const activeReturnReduction = returnReductionByInvoice.get(inv.id) ?? 0;
+      const balance =
+        inv.total_paise < 0
+          ? balanceBeforeReturns
+          : Math.max(0, balanceBeforeReturns - activeReturnReduction);
       let status = inv.status;
       if (status !== 'cancelled') {
-        if (paid <= 0) status = 'issued';
-        else if (paid >= inv.total_paise) status = 'paid';
-        else status = 'partial';
+        if (inv.status === 'draft') status = 'draft';
+        else if (inv.total_paise < 0) status = 'issued';
+        else if (balance <= 0) status = 'paid';
+        else if (paid > 0) status = 'partial';
+        else status = 'issued';
       }
       await db.invoices.put({
         ...inv,
@@ -836,6 +907,37 @@ async function rebuildInvoicePaidBalance(
         status,
       });
     }
+
+    for (const purchase of purchases) {
+      const paid = paidByPurchase.get(purchase.id) ?? 0;
+      const balance = purchase.total_paise - paid;
+      let status = purchase.status;
+      if (status !== 'cancelled') {
+        if (purchase.status === 'draft') status = 'draft';
+        else if (purchase.total_paise < 0) status = 'received';
+        else if (balance <= 0 && paid >= purchase.total_paise) status = 'paid';
+        else if (paid > 0) status = 'partial';
+        else status = 'received';
+      }
+      await db.purchases.put({
+        ...purchase,
+        paid_paise: paid,
+        balance_paise: balance,
+        status,
+      });
+    }
+  });
+  log.info('restore.derived.settlements', 'restore: settlement caches rebuilt', {
+    businessId,
+    invoiceCount: invoices.length,
+    purchaseCount: purchases.length,
+    paymentCount: payments.length,
+    advanceCount: advances.length,
+    activeSalesReturnCount: salesReturns.filter(
+      (salesReturn) => salesReturn.status === 'posted' && !salesReturn.deleted_at,
+    ).length,
+    invoiceAllocationTargets: paidByInvoice.size,
+    purchaseAllocationTargets: paidByPurchase.size,
   });
 }
 
