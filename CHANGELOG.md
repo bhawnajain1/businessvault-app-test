@@ -4,6 +4,22 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.7 — 2026-09-07
+
+### Fixed
+
+- **Complete restore event replay.** Added replay support for Sales Return headers/items and cancellations, purchase reversals, and category, unit, warehouse, account, and other entity updates that were previously skipped.
+- **Non-destructive update replay.** Partial journal payloads now merge into existing rows instead of replacing complete invoices, customers, suppliers, items, payments, advances, expenses, and master data with fragments.
+- **Recycle Bin accounting replay.** Invoice deletion replay now preserves `deletion_reversal_journal_id`, allowing a restored recycled invoice to unreverse its accounting correctly.
+
+### Diagnostics
+
+- Added structured warnings for unhandled events and missing update/reversal targets, plus debug records describing merged fields and entity-version transitions and an info record for each applied purchase reversal.
+
+### Tests
+
+- Added restore regression coverage for partial-update preservation, Sales Return create/cancel replay, Sales Return item replay, purchase reversal replay, and deletion-reversal pointer preservation.
+
 ## 1.0.6 — 2026-09-07
 
 ### Fixed
