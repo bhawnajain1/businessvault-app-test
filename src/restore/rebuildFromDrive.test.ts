@@ -14,7 +14,7 @@ import {
 import { metaDb, __resetMetaDbForTests } from '../lib/device';
 import { writeCsv } from '../csv/csvCodec';
 import { TABLE_SPECS } from './tableSchema';
-import type { Invoice } from '../db/types';
+import type { Invoice, Purchase, SalesReturn, SalesReturnItem } from '../db/types';
 
 // jsdom Blob has no arrayBuffer; force Node's.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -925,6 +925,248 @@ describe('rebuildFromDrive', () => {
     const row = await db.businesses.get('biz_replay');
     expect(row).toBeDefined();
     expect(row!.name).toBe('Replayed Biz');
+  });
+
+  it('merges partial updates without deleting unchanged fields', async () => {
+    const { applyEvent } = await import('./eventHandlers');
+    const diagnostics: string[] = [];
+    await db.customers.add(cust1);
+    await db.invoices.add(inv1 as Invoice);
+
+    const baseEvent: SyncEvent = {
+      event_id: 'evt_partial_customer',
+      business_id: BID,
+      device_id: 'dev_1',
+      entity_type: 'customer',
+      entity_id: cust1.id,
+      operation: 'update',
+      entity_version: 2,
+      timestamp: NOW,
+      payload: { id: cust1.id, name: 'Renamed Customer', entity_version: 2 },
+      payload_hash: 'x',
+      previous_hash: null,
+      sync_status: 'SYNCED',
+    };
+    await applyEvent(baseEvent, { db, businessId: BID, diagnostics });
+    await applyEvent(
+      {
+        ...baseEvent,
+        event_id: 'evt_partial_invoice',
+        entity_type: 'invoice',
+        entity_id: inv1.id,
+        payload: {
+          id: inv1.id,
+          balance_paise: 1000,
+          status: 'partial',
+          entity_version: 2,
+        },
+      },
+      { db, businessId: BID, diagnostics },
+    );
+
+    expect(await db.customers.get(cust1.id)).toMatchObject({
+      business_id: BID,
+      name: 'Renamed Customer',
+      email: cust1.email,
+    });
+    expect(await db.invoices.get(inv1.id)).toMatchObject({
+      business_id: BID,
+      invoice_number: inv1.invoice_number,
+      total_paise: inv1.total_paise,
+      balance_paise: 1000,
+      status: 'partial',
+    });
+    expect(diagnostics).toEqual([]);
+  });
+
+  it('replays sales return records, cancellation updates, and purchase reversals', async () => {
+    const { applyEvent } = await import('./eventHandlers');
+    const diagnostics: string[] = [];
+    const salesReturn: SalesReturn = {
+      id: 'sr_replay',
+      business_id: BID,
+      return_number: 'SR-000001',
+      return_date: '2026-08-20',
+      original_invoice_id: inv1.id,
+      customer_id: cust1.id,
+      subtotal_paise: 10000,
+      discount_paise: 0,
+      taxable_paise: 10000,
+      cgst_paise: 900,
+      sgst_paise: 900,
+      igst_paise: 0,
+      cess_paise: 0,
+      round_off_paise: 0,
+      round_off_mode: 'none',
+      pre_round_total_paise: 11800,
+      total_paise: 11800,
+      apply_to_balance_paise: 11800,
+      customer_credit_paise: 0,
+      status: 'posted',
+      reason: 'damaged',
+      notes: '',
+      journal_entry_id: 'je_sr',
+      reversed_credit_note_invoice_id: null,
+      legacy_migration_classification: null,
+      device_id: 'dev_1',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    const salesReturnItem: SalesReturnItem = {
+      id: 'sri_replay',
+      business_id: BID,
+      sales_return_id: salesReturn.id,
+      original_invoice_id: inv1.id,
+      original_invoice_line_id: inv1_line.id,
+      item_id: item.id,
+      description: item.name,
+      hsn: item.hsn,
+      warehouse_id: warehouse.id,
+      line_no: 1,
+      qty_micros: 1_000_000,
+      unit_price_paise: 10000,
+      discount_pct_bps: 0,
+      discount_paise: 0,
+      taxable_paise: 10000,
+      tax_rate_bps: 1800,
+      cgst_paise: 900,
+      sgst_paise: 900,
+      igst_paise: 0,
+      cess_paise: 0,
+      line_total_paise: 11800,
+    };
+    const purchase: Purchase = {
+      id: 'purchase_replay',
+      business_id: BID,
+      bill_number: 'BILL-001',
+      supplier_bill_number: 'SUP-001',
+      bill_date: '2026-08-20',
+      due_date: null,
+      supplier_id: 'supplier_1',
+      supplier_state_code: '27',
+      is_interstate: 0,
+      financial_year: '2026-27',
+      subtotal_paise: 10000,
+      discount_paise: 0,
+      taxable_paise: 10000,
+      cgst_paise: 900,
+      sgst_paise: 900,
+      igst_paise: 0,
+      cess_paise: 0,
+      round_off_paise: 0,
+      round_off_mode: 'none',
+      pre_round_total_paise: 11800,
+      total_paise: 11800,
+      paid_paise: 0,
+      balance_paise: 11800,
+      status: 'received',
+      reversed_by_purchase_id: null,
+      reverses_purchase_id: null,
+      notes: '',
+      attachment_id: null,
+      journal_entry_id: 'je_purchase',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    await db.purchases.add(purchase);
+
+    const event = (overrides: Partial<SyncEvent>): SyncEvent => ({
+      event_id: 'evt_replay',
+      business_id: BID,
+      device_id: 'dev_1',
+      entity_type: 'sales_return',
+      entity_id: salesReturn.id,
+      operation: 'create',
+      entity_version: 1,
+      timestamp: NOW,
+      payload: salesReturn as unknown as Readonly<Record<string, unknown>>,
+      payload_hash: 'x',
+      previous_hash: null,
+      sync_status: 'SYNCED',
+      ...overrides,
+    });
+    await applyEvent(event({}), { db, businessId: BID, diagnostics });
+    await applyEvent(
+      event({
+        event_id: 'evt_sri_replay',
+        entity_type: 'sales_return_item',
+        entity_id: salesReturnItem.id,
+        payload: salesReturnItem as unknown as Readonly<Record<string, unknown>>,
+      }),
+      { db, businessId: BID, diagnostics },
+    );
+    await applyEvent(
+      event({
+        event_id: 'evt_sr_cancel',
+        operation: 'update',
+        entity_version: 2,
+        payload: { id: salesReturn.id, status: 'cancelled', entity_version: 2 },
+      }),
+      { db, businessId: BID, diagnostics },
+    );
+    await applyEvent(
+      event({
+        event_id: 'evt_purchase_reverse',
+        entity_type: 'purchase',
+        entity_id: purchase.id,
+        operation: 'reverse',
+        entity_version: 2,
+        payload: {
+          purchase_id: purchase.id,
+          reason: 'edit',
+          reversal_journal_id: 'je_purchase_reverse',
+          renamed_bill_number: 'BILL-001-REV-ABC123',
+        },
+      }),
+      { db, businessId: BID, diagnostics },
+    );
+
+    expect(await db.sales_returns.get(salesReturn.id)).toMatchObject({
+      status: 'cancelled',
+      return_number: salesReturn.return_number,
+      total_paise: salesReturn.total_paise,
+    });
+    expect(await db.sales_return_items.get(salesReturnItem.id)).toEqual(salesReturnItem);
+    expect(await db.purchases.get(purchase.id)).toMatchObject({
+      status: 'cancelled',
+      bill_number: 'BILL-001-REV-ABC123',
+      total_paise: purchase.total_paise,
+    });
+    expect(diagnostics).toEqual([]);
+  });
+
+  it('preserves the deletion reversal journal pointer during replay', async () => {
+    const { applyEvent } = await import('./eventHandlers');
+    await db.invoices.add(inv1 as Invoice);
+    await applyEvent(
+      {
+        event_id: 'evt_delete_pointer',
+        business_id: BID,
+        device_id: 'dev_1',
+        entity_type: 'invoice',
+        entity_id: inv1.id,
+        operation: 'delete',
+        entity_version: 2,
+        timestamp: NOW,
+        payload: {
+          invoice_id: inv1.id,
+          deleted_at: NOW,
+          reason: 'mistake',
+          deletion_reversal_journal_id: 'je_delete_reverse',
+        },
+        payload_hash: 'x',
+        previous_hash: null,
+        sync_status: 'SYNCED',
+      },
+      { db, businessId: BID, diagnostics: [] },
+    );
+
+    expect(await db.invoices.get(inv1.id)).toMatchObject({
+      deleted_at: NOW,
+      deletion_reversal_journal_id: 'je_delete_reverse',
+    });
   });
 
   it('sets current_business_id in meta-DB after successful restore', async () => {
