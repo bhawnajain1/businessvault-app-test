@@ -770,7 +770,7 @@ describe('InvoiceService.deleteInvoice / restoreInvoice / permanentlyDeleteInvoi
     expect(await db.invoices.get(inv.id)).toBeDefined();
   });
 
-  it('permanentlyDeleteInvoice rejects invoices referenced by payments', async () => {
+  it('permanentlyDeleteInvoice cascades payments linked only to the invoice', async () => {
     const inv = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -807,11 +807,125 @@ describe('InvoiceService.deleteInvoice / restoreInvoice / permanentlyDeleteInvoi
     });
 
     await service.deleteInvoice(inv.id, 'testing payment guard');
+    expect((await db.payments.get('PAY-PURGE-REF'))?.deleted_reason).toBe(
+      `cascade:${inv.id}`,
+    );
+    await service.permanentlyDeleteInvoice(inv.id);
+
+    expect(await db.invoices.get(inv.id)).toBeUndefined();
+    expect(await db.payments.get('PAY-PURGE-REF')).toBeUndefined();
+    const purgeEvent = (
+      await db.sync_events
+        .where('[business_id+entity_type+entity_id]')
+        .equals([businessId, 'invoice', inv.id])
+        .toArray()
+    ).find(
+      (event) =>
+        (event.payload as { permanently_deleted?: boolean }).permanently_deleted === true,
+    );
+    expect(
+      (purgeEvent?.payload as { cascaded_payment_ids?: string[] }).cascaded_payment_ids,
+    ).toEqual(['PAY-PURGE-REF']);
+  });
+
+  it('permanentlyDeleteInvoice rejects payments shared with another invoice', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-PURGE-SHARED',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    const now = new Date().toISOString();
+    await db.payments.add({
+      id: 'PAY-PURGE-SHARED',
+      business_id: businessId,
+      payment_number: 'PAY-SHARED',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: customerId,
+      method: 'cash',
+      account_id: 'CASH',
+      amount_paise: inv.total_paise + 100,
+      reference: '',
+      notes: '',
+      allocations: [
+        { invoice_id: inv.id, amount_paise: inv.total_paise },
+        { invoice_id: 'ANOTHER-INVOICE', amount_paise: 100 },
+      ],
+      journal_entry_id: 'JE-PAY-PURGE-SHARED',
+      deleted_at: null,
+      deleted_reason: null,
+      created_at: now,
+      updated_at: now,
+      entity_version: 1,
+    });
+
+    await service.deleteInvoice(inv.id, 'testing shared payment guard');
 
     await expect(service.permanentlyDeleteInvoice(inv.id)).rejects.toThrow(
-      /referenced by a payment/,
+      /shared or active payment/,
     );
     expect(await db.invoices.get(inv.id)).toBeDefined();
+    expect(await db.payments.get('PAY-PURGE-SHARED')).toBeDefined();
+  });
+
+  it('permanentlyDeleteInvoice preserves an advance with unapplied credit', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-PURGE-ADVANCE',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    const now = new Date().toISOString();
+    await db.advances.add({
+      id: 'ADV-PURGE-CREDIT',
+      business_id: businessId,
+      advance_number: 'ADV-1',
+      advance_date: '2026-08-19',
+      party_type: 'customer',
+      party_id: customerId,
+      method: 'cash',
+      account_id: 'CASH',
+      amount_paise: inv.total_paise + 1000,
+      remaining_paise: 1000,
+      reference: '',
+      notes: '',
+      applications: [
+        {
+          invoice_id: inv.id,
+          amount_paise: inv.total_paise,
+          applied_at: now,
+          journal_entry_id: 'JE-ADV-APPLICATION',
+        },
+      ],
+      journal_entry_id: 'JE-ADV-PURGE-CREDIT',
+      deleted_at: null,
+      deleted_reason: null,
+      created_at: now,
+      updated_at: now,
+      entity_version: 1,
+    });
+
+    await service.deleteInvoice(inv.id, 'testing remaining advance guard');
+
+    await expect(service.permanentlyDeleteInvoice(inv.id)).rejects.toThrow(
+      /shared or active advance/,
+    );
+    expect(await db.invoices.get(inv.id)).toBeDefined();
+    expect(await db.advances.get('ADV-PURGE-CREDIT')).toBeDefined();
   });
 });
 

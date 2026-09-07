@@ -351,11 +351,41 @@ const HANDLERS: Record<string, EventHandler> = {
       return;
     }
     if (p.permanently_deleted === true) {
+      const paymentIds = Array.isArray(p.cascaded_payment_ids)
+        ? (p.cascaded_payment_ids as string[])
+        : [];
+      const advanceIds = Array.isArray(p.cascaded_advance_ids)
+        ? (p.cascaded_advance_ids as string[])
+        : [];
+      const cascadeTag = `cascade:${id}`;
+      const paymentsToDelete = (
+        await ctx.db.payments.bulkGet(paymentIds)
+      ).filter(
+        (row): row is Payment =>
+          !!row &&
+          row.business_id === ctx.businessId &&
+          row.deleted_reason === cascadeTag &&
+          row.allocations.length > 0 &&
+          row.allocations.every((allocation) => allocation.invoice_id === id),
+      );
+      const advancesToDelete = (
+        await ctx.db.advances.bulkGet(advanceIds)
+      ).filter(
+        (row): row is Advance =>
+          !!row &&
+          row.business_id === ctx.businessId &&
+          row.deleted_reason === cascadeTag &&
+          row.remaining_paise === 0 &&
+          row.applications.length > 0 &&
+          row.applications.every((application) => application.invoice_id === id),
+      );
       await ctx.db.invoice_line_return_summary
         .where('invoice_id')
         .equals(id)
         .delete();
       await ctx.db.invoice_lines.where('invoice_id').equals(id).delete();
+      await ctx.db.payments.bulkDelete(paymentsToDelete.map((row) => row.id));
+      await ctx.db.advances.bulkDelete(advancesToDelete.map((row) => row.id));
       await ctx.db.invoices.delete(id);
       return;
     }

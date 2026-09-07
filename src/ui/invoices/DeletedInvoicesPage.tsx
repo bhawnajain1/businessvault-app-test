@@ -51,7 +51,7 @@ export default function DeletedInvoicesPage() {
 
   async function permanentlyDelete(inv: Invoice) {
     const confirmed = window.confirm(
-      `Permanently delete invoice ${inv.invoice_number}?\n\nThis cannot be undone. Accounting and audit history will be preserved.`,
+      `Permanently delete invoice ${inv.invoice_number}?\n\nThis also deletes payments and advances linked only to this invoice. This cannot be undone. Accounting and audit history will be preserved.`,
     );
     if (!confirmed) return;
 
