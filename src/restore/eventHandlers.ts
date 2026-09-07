@@ -350,6 +350,15 @@ const HANDLERS: Record<string, EventHandler> = {
       ctx.diagnostics.push(`invoice:delete event ${evt.event_id} has no invoice_id`);
       return;
     }
+    if (p.permanently_deleted === true) {
+      await ctx.db.invoice_line_return_summary
+        .where('invoice_id')
+        .equals(id)
+        .delete();
+      await ctx.db.invoice_lines.where('invoice_id').equals(id).delete();
+      await ctx.db.invoices.delete(id);
+      return;
+    }
     const inv = await ctx.db.invoices.get(id);
     if (!inv) {
       ctx.diagnostics.push(`invoice:delete ${id}: invoice not found`);

@@ -610,7 +610,7 @@ describe('InvoiceService.updateInvoice', () => {
   });
 });
 
-describe('InvoiceService.deleteInvoice / restoreInvoice', () => {
+describe('InvoiceService.deleteInvoice / restoreInvoice / permanentlyDeleteInvoice', () => {
   it('soft-deletes an invoice and restores it (idempotent both ways)', async () => {
     const inv = await service.createInvoice({
       business_id: businessId,
@@ -678,6 +678,140 @@ describe('InvoiceService.deleteInvoice / restoreInvoice', () => {
       .equals([businessId, 'invoice', inv.id])
       .toArray();
     expect(events.some((e) => e.operation === 'deleted')).toBe(true);
+  });
+
+  it('permanently deletes only recycled invoices and preserves accounting history', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-PURGE-1',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    await expect(service.permanentlyDeleteInvoice(inv.id)).rejects.toThrow(
+      /must be in the Recycle Bin/,
+    );
+
+    const invoiceLines = await db.invoice_lines
+      .where('invoice_id')
+      .equals(inv.id)
+      .toArray();
+    await db.invoice_line_return_summary.bulkAdd(
+      invoiceLines.map((line) => ({
+        invoice_line_id: line.id,
+        invoice_id: inv.id,
+        business_id: businessId,
+        returned_qty_micros: 0,
+        updated_at: new Date().toISOString(),
+      })),
+    );
+
+    await service.deleteInvoice(inv.id, 'duplicate entry');
+    const recycled = await db.invoices.get(inv.id);
+    await service.permanentlyDeleteInvoice(inv.id);
+
+    expect(await db.invoices.get(inv.id)).toBeUndefined();
+    expect(await db.invoice_lines.where('invoice_id').equals(inv.id).count()).toBe(0);
+    expect(
+      await db.invoice_line_return_summary.where('invoice_id').equals(inv.id).count(),
+    ).toBe(0);
+
+    expect(await db.journal_entries.get(inv.journal_entry_id)).toBeDefined();
+    expect(
+      await db.journal_entries.get(recycled!.deletion_reversal_journal_id!),
+    ).toBeDefined();
+    const events = await db.sync_events
+      .where('[business_id+entity_type+entity_id]')
+      .equals([businessId, 'invoice', inv.id])
+      .toArray();
+    expect(events.some((event) => event.operation === 'deleted')).toBe(true);
+    expect(
+      events.some(
+        (event) =>
+          event.operation === 'deleted' &&
+          (event.payload as { permanently_deleted?: boolean }).permanently_deleted === true,
+      ),
+    ).toBe(true);
+  });
+
+  it('permanentlyDeleteInvoice rejects invoices referenced by returns or other invoices', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-PURGE-REF',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    await db.invoices.add({
+      ...inv,
+      id: 'INV-REFERENCE',
+      invoice_number: 'INV-PURGE-REF-CN',
+      reverses_invoice_id: inv.id,
+      journal_entry_id: 'JE-REFERENCE',
+      entity_version: 1,
+    });
+
+    await service.deleteInvoice(inv.id, 'testing reference guard');
+
+    await expect(service.permanentlyDeleteInvoice(inv.id)).rejects.toThrow(
+      /referenced by another invoice/,
+    );
+    expect(await db.invoices.get(inv.id)).toBeDefined();
+  });
+
+  it('permanentlyDeleteInvoice rejects invoices referenced by payments', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-PURGE-PAY',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    const now = new Date().toISOString();
+    await db.payments.add({
+      id: 'PAY-PURGE-REF',
+      business_id: businessId,
+      payment_number: 'PAY-1',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: customerId,
+      method: 'cash',
+      account_id: 'CASH',
+      amount_paise: inv.total_paise,
+      reference: '',
+      notes: '',
+      allocations: [{ invoice_id: inv.id, amount_paise: inv.total_paise }],
+      journal_entry_id: 'JE-PAY-PURGE-REF',
+      deleted_at: null,
+      deleted_reason: null,
+      created_at: now,
+      updated_at: now,
+      entity_version: 1,
+    });
+
+    await service.deleteInvoice(inv.id, 'testing payment guard');
+
+    await expect(service.permanentlyDeleteInvoice(inv.id)).rejects.toThrow(
+      /referenced by a payment/,
+    );
+    expect(await db.invoices.get(inv.id)).toBeDefined();
   });
 });
 

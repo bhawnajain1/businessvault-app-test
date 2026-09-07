@@ -49,6 +49,25 @@ export default function DeletedInvoicesPage() {
     }
   }
 
+  async function permanentlyDelete(inv: Invoice) {
+    const confirmed = window.confirm(
+      `Permanently delete invoice ${inv.invoice_number}?\n\nThis cannot be undone. Accounting and audit history will be preserved.`,
+    );
+    if (!confirmed) return;
+
+    setBusyId(inv.id);
+    setError(null);
+    try {
+      const svc = new InvoiceService();
+      await svc.permanentlyDeleteInvoice(inv.id);
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   if (loading) return <div className="p-6 text-slate-500">Loading...</div>;
   if (!businessId) {
     return (
@@ -72,7 +91,11 @@ export default function DeletedInvoicesPage() {
         </span>
       </div>
 
-      {error && <div className="text-sm text-rose-600">{error}</div>}
+      {error && (
+        <div role="alert" className="text-sm text-rose-600">
+          {error}
+        </div>
+      )}
 
       {rows.length === 0 ? (
         <div className="text-sm text-slate-500 border border-dashed border-slate-300 rounded p-8 text-center">
@@ -121,15 +144,25 @@ export default function DeletedInvoicesPage() {
                   <td className="px-3 py-2 text-slate-600">
                     {r.deleted_reason ?? ''}
                   </td>
-                  <td className="px-3 py-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() => restore(r)}
-                      disabled={busyId === r.id}
-                      className="text-xs bg-slate-900 text-white rounded px-2.5 py-1 hover:bg-slate-800 disabled:opacity-50"
-                    >
-                      {busyId === r.id ? 'Restoring...' : 'Restore'}
-                    </button>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center justify-end gap-3">
+                      <button
+                        type="button"
+                        onClick={() => restore(r)}
+                        disabled={busyId === r.id}
+                        className="text-xs bg-slate-900 text-white rounded px-2.5 py-1 hover:bg-slate-800 disabled:opacity-50"
+                      >
+                        {busyId === r.id ? 'Working...' : 'Restore'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => permanentlyDelete(r)}
+                        disabled={busyId === r.id}
+                        className="text-xs text-rose-700 hover:underline disabled:opacity-50"
+                      >
+                        Delete permanently
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

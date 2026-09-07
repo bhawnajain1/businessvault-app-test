@@ -14,6 +14,7 @@ import {
 import { metaDb, __resetMetaDbForTests } from '../lib/device';
 import { writeCsv } from '../csv/csvCodec';
 import { TABLE_SPECS } from './tableSchema';
+import type { Invoice } from '../db/types';
 
 // jsdom Blob has no arrayBuffer; force Node's.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -719,6 +720,46 @@ describe('rebuildFromDrive', () => {
     // Restore ran to completion — unshipped event is gone; snapshot data landed.
     expect(report.counts.customers).toBe(2);
     expect(await db.sync_events.get('evt_unshipped_2')).toBeUndefined();
+  });
+
+  it('replays permanent invoice deletion events idempotently', async () => {
+    const { applyEvent } = await import('./eventHandlers');
+    const now = new Date().toISOString();
+    await db.invoices.add({ ...inv1, deleted_at: now } as Invoice);
+    await db.invoice_lines.add(inv1_line);
+    await db.invoice_line_return_summary.add({
+      invoice_line_id: inv1_line.id,
+      invoice_id: inv1.id,
+      business_id: BID,
+      returned_qty_micros: 0,
+      updated_at: now,
+    });
+    const event: SyncEvent = {
+      event_id: 'evt_invoice_purge',
+      business_id: BID,
+      device_id: 'dev_1',
+      entity_type: 'invoice',
+      entity_id: inv1.id,
+      operation: 'delete',
+      entity_version: 2,
+      timestamp: now,
+      payload: { invoice_id: inv1.id, permanently_deleted: true },
+      payload_hash: 'x',
+      previous_hash: null,
+      sync_status: 'SYNCED',
+    };
+
+    expect(await applyEvent(event, { db, businessId: BID, diagnostics: [] })).toBe(
+      'applied',
+    );
+    expect(await applyEvent(event, { db, businessId: BID, diagnostics: [] })).toBe(
+      'applied',
+    );
+    expect(await db.invoices.get(inv1.id)).toBeUndefined();
+    expect(await db.invoice_lines.where('invoice_id').equals(inv1.id).count()).toBe(0);
+    expect(
+      await db.invoice_line_return_summary.where('invoice_id').equals(inv1.id).count(),
+    ).toBe(0);
   });
 
   it('replays "business:created" events into the businesses table', async () => {
