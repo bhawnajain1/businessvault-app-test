@@ -529,6 +529,7 @@ export const TABLE_SPECS: TableSpec[] = [
       { name: 'igst_paise', type: 'number' },
       { name: 'cess_paise', type: 'number' },
       { name: 'line_total_paise', type: 'number' },
+      { name: 'cogs_paise', type: 'number' },
     ],
   },
   // §20 Attachments — metadata only; the blob content is shipped separately

@@ -338,7 +338,25 @@ describe('SalesReturnService.createSalesReturn', () => {
     expect(je!.ref_id).toBe(sr.id);
     expect(je!.reverses_id).toBe(inv.journal_entry_id);
     expect(je!.total_debit_paise).toBe(je!.total_credit_paise);
-    expect(je!.total_debit_paise).toBe(sr.total_paise);
+    expect(je!.total_debit_paise).toBe(sr.total_paise + 32_000);
+
+    const journalLines = await db.journal_lines.where('entry_id').equals(je!.id).toArray();
+    const inventoryAccount = await db.accounts
+      .where('[business_id+code]')
+      .equals([businessId, '1400'])
+      .first();
+    const cogsAccount = await db.accounts
+      .where('[business_id+code]')
+      .equals([businessId, '5020'])
+      .first();
+    expect(journalLines.find((line) => line.account_id === inventoryAccount!.id)).toMatchObject({
+      debit_paise: 32_000,
+      credit_paise: 0,
+    });
+    expect(journalLines.find((line) => line.account_id === cogsAccount!.id)).toMatchObject({
+      debit_paise: 0,
+      credit_paise: 32_000,
+    });
   });
 
   it('T6: restores stock via positive sale_return movements', async () => {
@@ -376,6 +394,163 @@ describe('SalesReturnService.createSalesReturn', () => {
     );
     expect(retMov).toBeDefined();
     expect(retMov!.ref_type).toBe('reversal');
+    expect(retMov!.unit_cost_paise).toBe(8000);
+  });
+
+  it('T6b: return valuation uses original sale cost, not sale price or current average', async () => {
+    const inv = await makeInvoice('INV-000006B');
+    const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+    const stock = await db.item_stock
+      .where('[business_id+item_id+warehouse_id]')
+      .equals([businessId, itemId, warehouseId])
+      .first();
+    await db.item_stock.update(stock!.id, { avg_cost_paise: 12000 });
+    await db.items.update(itemId, { track_inventory: 0 });
+
+    const sr = await retSvc.createSalesReturn({
+      business_id: businessId,
+      device_id: deviceId,
+      original_invoice_id: inv.id,
+      return_date: '2026-08-20',
+      reason: 'Historical valuation',
+      lines: [{ original_invoice_line_id: lines[0].id, qty_micros: 3_000_000 }],
+    });
+
+    const movement = await db.stock_movements
+      .where('[business_id+ref_type+ref_id]')
+      .equals([businessId, 'reversal', sr.id])
+      .first();
+    expect(movement).toMatchObject({
+      qty_micros: 3_000_000,
+      unit_cost_paise: 8000,
+    });
+    expect(await db.item_stock.get(stock!.id)).toMatchObject({
+      qty_micros: stock!.qty_micros + 3_000_000,
+      avg_cost_paise: 12000,
+    });
+    const journalLines = await db.journal_lines
+      .where('entry_id')
+      .equals(sr.journal_entry_id)
+      .toArray();
+    const cogsAccount = await db.accounts
+      .where('[business_id+code]')
+      .equals([businessId, '5020'])
+      .first();
+    expect(journalLines.find((line) => line.account_id === cogsAccount!.id)).toMatchObject({
+      debit_paise: 0,
+      credit_paise: 24_000,
+    });
+
+    await retSvc.cancelSalesReturn(sr.id, businessId, 'Undo historical valuation');
+    const stockAfterCancel = await db.item_stock.get(stock!.id);
+    expect(stockAfterCancel!.qty_micros).toBe(stock!.qty_micros);
+    expect(stockAfterCancel!.avg_cost_paise).toBe(12000);
+  });
+
+  it('T6c: refuses to guess inventory cost when the original sale movement is missing', async () => {
+    const inv = await makeInvoice('INV-000006C');
+    const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+    await db.stock_movements
+      .where('[business_id+ref_type+ref_id]')
+      .equals([businessId, 'invoice', inv.id])
+      .delete();
+
+    await expect(
+      retSvc.createSalesReturn({
+        business_id: businessId,
+        device_id: deviceId,
+        original_invoice_id: inv.id,
+        return_date: '2026-08-20',
+        reason: 'Missing valuation source',
+        lines: [{ original_invoice_line_id: lines[0].id, qty_micros: 1_000_000 }],
+      }),
+    ).rejects.toThrow(/original sale cost history is incomplete/);
+
+    expect(await db.sales_returns.where('business_id').equals(businessId).count()).toBe(0);
+  });
+
+  it('T6d: split returns allocate the original COGS total without rounding drift', async () => {
+    const stock = await db.item_stock
+      .where('[business_id+item_id+warehouse_id]')
+      .equals([businessId, itemId, warehouseId])
+      .first();
+    await db.item_stock.update(stock!.id, { avg_cost_paise: 1 });
+    const inv = await invSvc.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-000006D',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [{
+        ...tenUnitLine(),
+        qty_micros: 1_000_000,
+        taxable_paise: 10_000,
+        cgst_paise: 900,
+        sgst_paise: 900,
+        line_total_paise: 11_800,
+      }],
+    });
+    const [line] = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+
+    const first = await retSvc.createSalesReturn({
+      business_id: businessId,
+      device_id: deviceId,
+      original_invoice_id: inv.id,
+      return_date: '2026-08-20',
+      reason: 'First half',
+      lines: [{ original_invoice_line_id: line.id, qty_micros: 500_000 }],
+    });
+    const second = await retSvc.createSalesReturn({
+      business_id: businessId,
+      device_id: deviceId,
+      original_invoice_id: inv.id,
+      return_date: '2026-08-21',
+      reason: 'Second half',
+      lines: [{ original_invoice_line_id: line.id, qty_micros: 500_000 }],
+    });
+
+    const returnItems = await db.sales_return_items
+      .where('original_invoice_id')
+      .equals(inv.id)
+      .toArray();
+    expect(returnItems.map((item) => item.cogs_paise)).toEqual([0, 1]);
+
+    const cogsAccount = await db.accounts
+      .where('[business_id+code]')
+      .equals([businessId, '5020'])
+      .first();
+    const reversedCogs = (
+      await db.journal_lines
+        .where('entry_id')
+        .anyOf(first.journal_entry_id, second.journal_entry_id)
+        .toArray()
+    )
+      .filter((journalLine) => journalLine.account_id === cogsAccount!.id)
+      .reduce((total, journalLine) => total + journalLine.credit_paise, 0);
+    expect(reversedCogs).toBe(1);
+  });
+
+  it('T6e: rejects duplicate requests for the same original invoice line', async () => {
+    const inv = await makeInvoice('INV-000006E');
+    const [line] = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+
+    await expect(
+      retSvc.createSalesReturn({
+        business_id: businessId,
+        device_id: deviceId,
+        original_invoice_id: inv.id,
+        return_date: '2026-08-20',
+        reason: 'Duplicate request',
+        lines: [
+          { original_invoice_line_id: line.id, qty_micros: 6_000_000 },
+          { original_invoice_line_id: line.id, qty_micros: 6_000_000 },
+        ],
+      }),
+    ).rejects.toThrow(/appears more than once/);
   });
 
   it('T7: settlement — apply-to-balance for unpaid invoice, no customer credit', async () => {
@@ -728,6 +903,22 @@ describe('SalesReturnService.createSalesReturn', () => {
       expect(rl.debit_paise).toBe(ol!.credit_paise);
       expect(rl.credit_paise).toBe(ol!.debit_paise);
     }
+    const cogsAccount = await db.accounts
+      .where('[business_id+code]')
+      .equals([businessId, '5020'])
+      .first();
+    const inventoryAccount = await db.accounts
+      .where('[business_id+code]')
+      .equals([businessId, '1400'])
+      .first();
+    expect(revLines.find((line) => line.account_id === cogsAccount!.id)).toMatchObject({
+      debit_paise: 24_000,
+      credit_paise: 0,
+    });
+    expect(revLines.find((line) => line.account_id === inventoryAccount!.id)).toMatchObject({
+      debit_paise: 0,
+      credit_paise: 24_000,
+    });
   });
 
   it('T17: cancelSalesReturn reverses stock movements and item_stock', async () => {

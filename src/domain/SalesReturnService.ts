@@ -123,6 +123,7 @@ export class SalesReturnService {
       });
       throw new SalesReturnValidationError('at least one line is required');
     }
+    const requestedLineIds = new Set<string>();
     for (const l of input.lines) {
       if (!Number.isInteger(l.qty_micros) || l.qty_micros <= 0) {
         log.warn(
@@ -134,6 +135,12 @@ export class SalesReturnService {
           `line ${l.original_invoice_line_id}: qty_micros must be a positive integer`,
         );
       }
+      if (requestedLineIds.has(l.original_invoice_line_id)) {
+        throw new SalesReturnValidationError(
+          `invoice line ${l.original_invoice_line_id} appears more than once`,
+        );
+      }
+      requestedLineIds.add(l.original_invoice_line_id);
     }
 
     // -------- pre-tx reads (informational; re-checked inside tx) ------------
@@ -155,11 +162,17 @@ export class SalesReturnService {
     // original and the reversal with a fresh reissue, and updateInvoice()
     // does not carry reversed_by_invoice_id forward to the reissue.
 
-    const [receivableAcct, salesAcct] = await Promise.all([
+    const [receivableAcct, salesAcct, inventoryAcct, cogsAcct] = await Promise.all([
       findAccountByCode(input.business_id, SYSTEM_ACCOUNT_CODES.RECEIVABLE, {
         db: this.db,
       }),
       findAccountByCode(input.business_id, SYSTEM_ACCOUNT_CODES.SALES_REVENUE, {
+        db: this.db,
+      }),
+      findAccountByCode(input.business_id, SYSTEM_ACCOUNT_CODES.INVENTORY, {
+        db: this.db,
+      }),
+      findAccountByCode(input.business_id, SYSTEM_ACCOUNT_CODES.COGS, {
         db: this.db,
       }),
     ]);
@@ -261,6 +274,57 @@ export class SalesReturnService {
           .where('invoice_id')
           .equals(input.original_invoice_id)
           .toArray();
+        const originalSaleMovements = await this.db.stock_movements
+          .where('[business_id+ref_type+ref_id]')
+          .equals([input.business_id, 'invoice', input.original_invoice_id])
+          .filter((movement) => movement.movement_type === 'sale' && movement.qty_micros < 0)
+          .toArray();
+        const saleCostByItemWarehouse = new Map<
+          string,
+          { qty_micros: number; value_micros_paise: number }
+        >();
+        const postedCogsPaise = cogsAcct
+          ? (
+              await this.db.journal_lines
+                .where('entry_id')
+                .equals(inv.journal_entry_id)
+                .toArray()
+            )
+              .filter((line) => line.account_id === cogsAcct.id)
+              .reduce(
+                (total, line) => total + line.debit_paise - line.credit_paise,
+                0,
+              )
+          : 0;
+        for (const movement of originalSaleMovements) {
+          const key = `${movement.item_id}:${movement.warehouse_id}`;
+          const existing = saleCostByItemWarehouse.get(key) ?? {
+            qty_micros: 0,
+            value_micros_paise: 0,
+          };
+          const qtyMicros = Math.abs(movement.qty_micros);
+          existing.qty_micros += qtyMicros;
+          existing.value_micros_paise += qtyMicros * movement.unit_cost_paise;
+          saleCostByItemWarehouse.set(key, existing);
+        }
+        if (postedCogsPaise > 0) {
+          const movementCogsPaise = originalSaleMovements.reduce(
+            (total, movement) =>
+              total +
+              bankersRound(
+                (Math.abs(movement.qty_micros) * movement.unit_cost_paise) /
+                  1_000_000,
+              ),
+            0,
+          );
+          if (postedCogsPaise !== movementCogsPaise) {
+            throw new SalesReturnValidationError(
+              'original sale cost history is incomplete; repair the invoice inventory ledger before returning goods',
+            );
+          }
+        } else {
+          saleCostByItemWarehouse.clear();
+        }
         const lineById = new Map<string, InvoiceLine>();
         for (const l of originalLines) lineById.set(l.id, l);
 
@@ -281,12 +345,18 @@ export class SalesReturnService {
           .equals(input.original_invoice_id)
           .toArray();
         const priorReturnedByLine = new Map<string, number>();
+        const priorCogsByLine = new Map<string, number>();
         for (const it of priorItems) {
           if (!activeReturnIds.has(it.sales_return_id)) continue;
           priorReturnedByLine.set(
             it.original_invoice_line_id,
             (priorReturnedByLine.get(it.original_invoice_line_id) ?? 0) +
               it.qty_micros,
+          );
+          priorCogsByLine.set(
+            it.original_invoice_line_id,
+            (priorCogsByLine.get(it.original_invoice_line_id) ?? 0) +
+              (it.cogs_paise ?? 0),
           );
         }
 
@@ -355,6 +425,34 @@ export class SalesReturnService {
           const proSubtotal = bankersRound(
             (orig.unit_price_paise * req.qty_micros) / 1_000_000,
           );
+          const costBasis = saleCostByItemWarehouse.get(
+            `${orig.item_id}:${orig.warehouse_id}`,
+          );
+          let cogsPaise = 0;
+          if (costBasis && costBasis.qty_micros > 0) {
+            const unitCostPaise = bankersRound(
+              costBasis.value_micros_paise / costBasis.qty_micros,
+            );
+            const originalCogsPaise = bankersRound(
+              (orig.qty_micros * unitCostPaise) / 1_000_000,
+            );
+            const cumulativeReturnedQty = alreadyReturned + req.qty_micros;
+            const cumulativeCogsTarget =
+              cumulativeReturnedQty === orig.qty_micros
+                ? originalCogsPaise
+                : bankersRound(
+                    (originalCogsPaise * cumulativeReturnedQty) /
+                      orig.qty_micros,
+                  );
+            cogsPaise =
+              cumulativeCogsTarget - (priorCogsByLine.get(orig.id) ?? 0);
+          } else {
+            if (postedCogsPaise > 0) {
+              throw new SalesReturnValidationError(
+                `original sale cost missing for invoice line ${orig.id}`,
+              );
+            }
+          }
 
           items.push({
             id: ulid(),
@@ -378,6 +476,7 @@ export class SalesReturnService {
             igst_paise: proIgst,
             cess_paise: proCess,
             line_total_paise: proLineTotal,
+            cogs_paise: cogsPaise,
           });
 
           subtotalPaise += proSubtotal;
@@ -477,23 +576,38 @@ export class SalesReturnService {
         // (item_id, warehouse_id) — but we keep one movement per return line
         // for full audit fidelity (line-level movements match line-level
         // history in reports).
-        const movements: StockMovement[] = items.map((it) => ({
-          id: ulid(),
-          business_id: input.business_id,
-          item_id: it.item_id,
-          warehouse_id: it.warehouse_id,
-          movement_type: 'sale_return',
-          qty_micros: it.qty_micros,
-          unit_cost_paise: it.unit_price_paise,
-          ref_type: 'reversal',
-          ref_id: salesReturnId,
-          occurred_at: now,
-          notes: `Sales return ${returnNumber} line ${it.line_no}`,
-        }));
+        const movements: StockMovement[] = [];
+        let totalCogsReversalPaise = 0;
+        for (const it of items) {
+          const costBasis = saleCostByItemWarehouse.get(
+            `${it.item_id}:${it.warehouse_id}`,
+          );
+          // The original sale movement records whether this line affected
+          // inventory. Do not use the item's current tracking flag: it may
+          // have changed since the invoice was issued.
+          if (!costBasis || costBasis.qty_micros <= 0) {
+            continue;
+          }
+          const unitCostPaise = bankersRound(
+            costBasis.value_micros_paise / costBasis.qty_micros,
+          );
+          totalCogsReversalPaise += it.cogs_paise ?? 0;
+          movements.push({
+            id: ulid(),
+            business_id: input.business_id,
+            item_id: it.item_id,
+            warehouse_id: it.warehouse_id,
+            movement_type: 'sale_return',
+            qty_micros: it.qty_micros,
+            unit_cost_paise: unitCostPaise,
+            ref_type: 'reversal',
+            ref_id: salesReturnId,
+            occurred_at: now,
+            notes: `Sales return ${returnNumber} line ${it.line_no}`,
+          });
+        }
         for (const mv of movements) {
           await this.db.stock_movements.add(mv);
-          const item = await this.db.items.get(mv.item_id);
-          if (!item || item.track_inventory !== 1) continue;
           const stockKey = `${input.business_id}:${mv.item_id}:${mv.warehouse_id}`;
           const existing = await this.db.item_stock.get(stockKey);
           if (existing) {
@@ -630,7 +744,8 @@ export class SalesReturnService {
         // the income and tax liability), Credit AR (for the applied-to-
         // balance portion) and Customer Advances (for the excess-credit
         // portion). This mirrors the original sale JE's shape scaled to the
-        // returned portion, so total_debit === total_credit === totalPaise.
+        // returned portion. The inventory/COGS pair below is independently
+        // balanced, so the complete entry remains balanced.
         const jeLines: JournalLine[] = [];
         let jlNo = 1;
         jeLines.push({
@@ -727,6 +842,37 @@ export class SalesReturnService {
             party_type: 'customer',
             party_id: inv.customer_id,
             description: 'Customer credit issued (return)',
+          });
+        }
+        if (totalCogsReversalPaise > 0) {
+          if (!inventoryAcct || !cogsAcct) {
+            throw new SalesReturnValidationError(
+              'Chart of accounts missing required inventory accounts (1400/5020) — run "Repair chart of accounts".',
+            );
+          }
+          jeLines.push({
+            id: ulid(),
+            business_id: input.business_id,
+            entry_id: journalEntryId,
+            line_no: jlNo++,
+            account_id: inventoryAcct.id,
+            debit_paise: totalCogsReversalPaise,
+            credit_paise: 0,
+            party_type: null,
+            party_id: null,
+            description: 'Inventory restored (sales return)',
+          });
+          jeLines.push({
+            id: ulid(),
+            business_id: input.business_id,
+            entry_id: journalEntryId,
+            line_no: jlNo++,
+            account_id: cogsAcct.id,
+            debit_paise: 0,
+            credit_paise: totalCogsReversalPaise,
+            party_type: null,
+            party_id: null,
+            description: 'Cost of goods sold reversed',
           });
         }
         // Balance the entry with a round-off line if pro-rating fractions
@@ -894,6 +1040,7 @@ export class SalesReturnService {
           journalEntryId,
           jeLineCount: jeLines.length,
           movementCount: movements.length,
+          cogsReversalPaise: totalCogsReversalPaise,
         });
         return sr;
       },
@@ -1144,32 +1291,29 @@ export class SalesReturnService {
             notes: `Cancel: ${orig.notes}`,
           };
           await this.db.stock_movements.add(revMv);
-          const item = await this.db.items.get(orig.item_id);
-          if (item && item.track_inventory === 1) {
-            const stockKey = `${businessId}:${orig.item_id}:${orig.warehouse_id}`;
-            const existing = await this.db.item_stock.get(stockKey);
-            if (existing) {
-              await this.db.item_stock.put({
-                ...existing,
-                qty_micros: existing.qty_micros - orig.qty_micros,
+          const stockKey = `${businessId}:${orig.item_id}:${orig.warehouse_id}`;
+          const existing = await this.db.item_stock.get(stockKey);
+          if (existing) {
+            await this.db.item_stock.put({
+              ...existing,
+              qty_micros: existing.qty_micros - orig.qty_micros,
+              updated_at: now,
+            });
+          } else {
+            const legacy = await this.db.item_stock
+              .where('[business_id+item_id+warehouse_id]')
+              .equals([businessId, orig.item_id, orig.warehouse_id])
+              .first();
+            if (legacy) {
+              await this.db.item_stock.update(legacy.id, {
+                qty_micros: legacy.qty_micros - orig.qty_micros,
                 updated_at: now,
               });
-            } else {
-              const legacy = await this.db.item_stock
-                .where('[business_id+item_id+warehouse_id]')
-                .equals([businessId, orig.item_id, orig.warehouse_id])
-                .first();
-              if (legacy) {
-                await this.db.item_stock.update(legacy.id, {
-                  qty_micros: legacy.qty_micros - orig.qty_micros,
-                  updated_at: now,
-                });
-              }
-              // If neither stock row exists, we don't create one — the
-              // original movement wrote it, and its absence now means
-              // someone deleted it externally. Log and continue rather
-              // than fabricate.
             }
+            // If neither stock row exists, we don't create one — the
+            // original movement wrote it, and its absence now means
+            // someone deleted it externally. Log and continue rather
+            // than fabricate.
           }
           await writeEventInTx(this.db, {
             business_id: businessId,

@@ -853,7 +853,7 @@ describe('rebuildFromDrive', () => {
         .first(),
     ).toMatchObject({
       qty_micros: 148_000_000,
-      avg_cost_paise: 10020,
+      avg_cost_paise: 9333,
     });
   });
 

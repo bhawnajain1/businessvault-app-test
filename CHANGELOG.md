@@ -4,6 +4,21 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.9 — 2026-09-07
+
+### Fixed
+
+- **Sales Return inventory valuation.** Inventory-tracked returns now restore stock at the original invoice sale movement's cost instead of the sale price or current moving average. Existing moving-average stock value remains unchanged, matching the established quantity-only return behavior. If the historical cost ledger is incomplete, posting stops rather than inventing a valuation.
+- **Sales Return COGS reversal.** Return journals now post a balanced debit to Inventory and credit to Cost of Goods Sold for the restored historical cost. Cancelling a return reverses those exact journal lines and stock movements, including when the item's current inventory-tracking setting changed after the sale.
+
+### Diagnostics
+
+- Added the aggregate COGS reversal amount to the structured Sales Return completion log.
+
+### Tests
+
+- Added regressions for historical-cost stock movements, cumulative split-return rounding, Inventory/COGS journal lines, incomplete-cost-ledger rejection, changed inventory-tracking settings, and exact cancellation reversal.
+
 ## 1.0.8 — 2026-09-07
 
 ### Fixed
