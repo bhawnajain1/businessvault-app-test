@@ -734,6 +734,48 @@ describe('rebuildFromDrive', () => {
       returned_qty_micros: 0,
       updated_at: now,
     });
+    await db.payments.add({
+      id: 'payment_invoice_purge',
+      business_id: BID,
+      payment_number: 'PAY-PURGE',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust_1',
+      method: 'cash',
+      account_id: 'acc_cash',
+      amount_paise: inv1.total_paise,
+      reference: '',
+      notes: '',
+      allocations: [{ invoice_id: inv1.id, amount_paise: inv1.total_paise }],
+      journal_entry_id: 'je_payment_purge',
+      deleted_at: now,
+      deleted_reason: `cascade:${inv1.id}`,
+      created_at: now,
+      updated_at: now,
+      entity_version: 2,
+    });
+    await db.payments.add({
+      id: 'payment_invoice_purge_active',
+      business_id: BID,
+      payment_number: 'PAY-PURGE-ACTIVE',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust_1',
+      method: 'cash',
+      account_id: 'acc_cash',
+      amount_paise: 100,
+      reference: '',
+      notes: '',
+      allocations: [{ invoice_id: 'another_invoice', amount_paise: 100 }],
+      journal_entry_id: 'je_payment_purge_active',
+      deleted_at: null,
+      deleted_reason: null,
+      created_at: now,
+      updated_at: now,
+      entity_version: 3,
+    });
     const event: SyncEvent = {
       event_id: 'evt_invoice_purge',
       business_id: BID,
@@ -743,7 +785,15 @@ describe('rebuildFromDrive', () => {
       operation: 'delete',
       entity_version: 2,
       timestamp: now,
-      payload: { invoice_id: inv1.id, permanently_deleted: true },
+      payload: {
+        invoice_id: inv1.id,
+        permanently_deleted: true,
+        cascaded_payment_ids: [
+          'payment_invoice_purge',
+          'payment_invoice_purge_active',
+        ],
+        cascaded_advance_ids: [],
+      },
       payload_hash: 'x',
       previous_hash: null,
       sync_status: 'SYNCED',
@@ -757,6 +807,8 @@ describe('rebuildFromDrive', () => {
     );
     expect(await db.invoices.get(inv1.id)).toBeUndefined();
     expect(await db.invoice_lines.where('invoice_id').equals(inv1.id).count()).toBe(0);
+    expect(await db.payments.get('payment_invoice_purge')).toBeUndefined();
+    expect(await db.payments.get('payment_invoice_purge_active')).toBeDefined();
     expect(
       await db.invoice_line_return_summary.where('invoice_id').equals(inv1.id).count(),
     ).toBe(0);

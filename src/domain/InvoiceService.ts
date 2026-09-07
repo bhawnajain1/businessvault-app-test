@@ -1186,18 +1186,28 @@ export class InvoiceService {
           throw new Error('Cannot permanently delete an invoice referenced by a sales return');
         }
 
-        const payment = await this.db.payments
+        const payments = await this.db.payments
           .where('business_id')
           .equals(invoice.business_id)
           .filter((row) =>
             (row.allocations ?? []).some((allocation) => allocation.invoice_id === invoiceId),
           )
-          .first();
-        if (payment) {
-          throw new Error('Cannot permanently delete an invoice referenced by a payment');
+          .toArray();
+        const cascadeTag = `cascade:${invoiceId}`;
+        const paymentsToDelete = payments.filter(
+          (row) =>
+            !!row.deleted_at &&
+            row.deleted_reason === cascadeTag &&
+            row.allocations.length > 0 &&
+            row.allocations.every((allocation) => allocation.invoice_id === invoiceId),
+        );
+        if (paymentsToDelete.length !== payments.length) {
+          throw new Error(
+            'Cannot permanently delete an invoice referenced by a shared or active payment',
+          );
         }
 
-        const advance = await this.db.advances
+        const advances = await this.db.advances
           .where('business_id')
           .equals(invoice.business_id)
           .filter((row) =>
@@ -1205,16 +1215,30 @@ export class InvoiceService {
               (application) => application.invoice_id === invoiceId,
             ),
           )
-          .first();
-        if (advance) {
-          throw new Error('Cannot permanently delete an invoice referenced by an advance');
+          .toArray();
+        const advancesToDelete = advances.filter(
+          (row) =>
+            !!row.deleted_at &&
+            row.deleted_reason === cascadeTag &&
+            row.remaining_paise === 0 &&
+            row.applications.length > 0 &&
+            row.applications.every((application) => application.invoice_id === invoiceId),
+        );
+        if (advancesToDelete.length !== advances.length) {
+          throw new Error(
+            'Cannot permanently delete an invoice referenced by a shared or active advance',
+          );
         }
 
+        const paymentIds = paymentsToDelete.map((row) => row.id);
+        const advanceIds = advancesToDelete.map((row) => row.id);
         await this.db.invoice_line_return_summary
           .where('invoice_id')
           .equals(invoiceId)
           .delete();
         await this.db.invoice_lines.where('invoice_id').equals(invoiceId).delete();
+        await this.db.payments.bulkDelete(paymentIds);
+        await this.db.advances.bulkDelete(advanceIds);
         await this.db.invoices.delete(invoiceId);
         await writeEventInTx(this.db, {
           business_id: invoice.business_id,
@@ -1224,7 +1248,12 @@ export class InvoiceService {
           operation: 'deleted',
           entity_version: invoice.entity_version + 1,
           timestamp: new Date().toISOString(),
-          payload: { invoice_id: invoiceId, permanently_deleted: true },
+          payload: {
+            invoice_id: invoiceId,
+            permanently_deleted: true,
+            cascaded_payment_ids: paymentIds,
+            cascaded_advance_ids: advanceIds,
+          },
         });
       },
     );
