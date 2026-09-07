@@ -1139,6 +1139,98 @@ export class InvoiceService {
   }
 
   /**
+   * Permanently remove an invoice header and its detail/cache rows from the
+   * Recycle Bin. Accounting journals and sync events remain append-only so a
+   * purge cannot change financial reports or erase the audit trail.
+   */
+  async permanentlyDeleteInvoice(invoiceId: string): Promise<void> {
+    await this.db.transaction(
+      'rw',
+      [
+        this.db.invoices,
+        this.db.invoice_lines,
+        this.db.invoice_line_return_summary,
+        this.db.sales_returns,
+        this.db.payments,
+        this.db.advances,
+        this.db.sync_events,
+      ],
+      async () => {
+        const invoice = await this.db.invoices.get(invoiceId);
+        if (!invoice) throw new Error(`Invoice not found: ${invoiceId}`);
+        if (!invoice.deleted_at) {
+          throw new Error('Invoice must be in the Recycle Bin before permanent deletion');
+        }
+
+        const referencingInvoice = await this.db.invoices
+          .where('business_id')
+          .equals(invoice.business_id)
+          .filter(
+            (row) =>
+              row.id !== invoiceId &&
+              (row.reverses_invoice_id === invoiceId ||
+                row.reversed_by_invoice_id === invoiceId),
+          )
+          .first();
+        if (referencingInvoice) {
+          throw new Error(
+            'Cannot permanently delete an invoice referenced by another invoice',
+          );
+        }
+
+        const salesReturn = await this.db.sales_returns
+          .where('[business_id+original_invoice_id]')
+          .equals([invoice.business_id, invoiceId])
+          .first();
+        if (salesReturn) {
+          throw new Error('Cannot permanently delete an invoice referenced by a sales return');
+        }
+
+        const payment = await this.db.payments
+          .where('business_id')
+          .equals(invoice.business_id)
+          .filter((row) =>
+            (row.allocations ?? []).some((allocation) => allocation.invoice_id === invoiceId),
+          )
+          .first();
+        if (payment) {
+          throw new Error('Cannot permanently delete an invoice referenced by a payment');
+        }
+
+        const advance = await this.db.advances
+          .where('business_id')
+          .equals(invoice.business_id)
+          .filter((row) =>
+            (row.applications ?? []).some(
+              (application) => application.invoice_id === invoiceId,
+            ),
+          )
+          .first();
+        if (advance) {
+          throw new Error('Cannot permanently delete an invoice referenced by an advance');
+        }
+
+        await this.db.invoice_line_return_summary
+          .where('invoice_id')
+          .equals(invoiceId)
+          .delete();
+        await this.db.invoice_lines.where('invoice_id').equals(invoiceId).delete();
+        await this.db.invoices.delete(invoiceId);
+        await writeEventInTx(this.db, {
+          business_id: invoice.business_id,
+          device_id: 'system',
+          entity_type: 'invoice',
+          entity_id: invoiceId,
+          operation: 'deleted',
+          entity_version: invoice.entity_version + 1,
+          timestamp: new Date().toISOString(),
+          payload: { invoice_id: invoiceId, permanently_deleted: true },
+        });
+      },
+    );
+  }
+
+  /**
    * Edit an existing invoice. To preserve the append-only journal invariant
    * (spec §24) the underlying implementation reverses the original's postings —
    * emits a reversing journal + a mirror-negative credit note — and then posts a
