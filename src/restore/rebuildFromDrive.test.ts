@@ -14,7 +14,15 @@ import {
 import { metaDb, __resetMetaDbForTests } from '../lib/device';
 import { writeCsv } from '../csv/csvCodec';
 import { TABLE_SPECS } from './tableSchema';
-import type { Invoice, Purchase, SalesReturn, SalesReturnItem } from '../db/types';
+import type {
+  Advance,
+  Invoice,
+  Payment,
+  Purchase,
+  SalesReturn,
+  SalesReturnItem,
+  StockMovement,
+} from '../db/types';
 
 // jsdom Blob has no arrayBuffer; force Node's.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -621,6 +629,272 @@ describe('rebuildFromDrive', () => {
     expect(await db.customers.count()).toBe(cust);
     expect(await db.invoices.count()).toBe(inv);
     expect(await db.journal_entries.count()).toBe(je);
+  });
+
+  it('rebuilds purchase payments and supplier advance applications', async () => {
+    const purchase: Purchase = {
+      id: 'purchase_settlement',
+      business_id: BID,
+      bill_number: 'BILL-SETTLEMENT',
+      supplier_bill_number: 'SUP-SETTLEMENT',
+      bill_date: '2026-08-20',
+      due_date: null,
+      supplier_id: 'supplier_1',
+      supplier_state_code: '27',
+      is_interstate: 0,
+      financial_year: '2026-27',
+      subtotal_paise: 10000,
+      discount_paise: 0,
+      taxable_paise: 10000,
+      cgst_paise: 900,
+      sgst_paise: 900,
+      igst_paise: 0,
+      cess_paise: 0,
+      round_off_paise: 0,
+      round_off_mode: 'none',
+      pre_round_total_paise: 11800,
+      total_paise: 11800,
+      paid_paise: 0,
+      balance_paise: 11800,
+      status: 'received',
+      reversed_by_purchase_id: null,
+      reverses_purchase_id: null,
+      notes: '',
+      attachment_id: null,
+      journal_entry_id: 'je_purchase_settlement',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    const supplierPayment: Payment = {
+      id: 'payment_supplier',
+      business_id: BID,
+      payment_number: 'PMT-SUPPLIER',
+      payment_date: '2026-08-20',
+      direction: 'out',
+      party_type: 'supplier',
+      party_id: purchase.supplier_id,
+      method: 'cash',
+      account_id: 'acc_cash',
+      amount_paise: 3000,
+      reference: '',
+      notes: '',
+      allocations: [{ bill_id: purchase.id, amount_paise: 3000 }],
+      journal_entry_id: 'je_payment_supplier',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    const supplierAdvance: Advance = {
+      id: 'advance_supplier',
+      business_id: BID,
+      advance_number: 'ADV-SUPPLIER',
+      advance_date: '2026-08-20',
+      party_type: 'supplier',
+      party_id: purchase.supplier_id,
+      method: 'cash',
+      account_id: 'acc_cash',
+      amount_paise: 4000,
+      remaining_paise: 2000,
+      reference: '',
+      notes: '',
+      applications: [
+        {
+          bill_id: purchase.id,
+          amount_paise: 2000,
+          applied_at: NOW,
+          journal_entry_id: 'je_advance_supplier_apply',
+        },
+      ],
+      journal_entry_id: 'je_advance_supplier',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 2,
+    };
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    const event = (
+      row: Purchase | Payment | Advance,
+      entityType: SyncEvent['entity_type'],
+    ): SyncEvent => ({
+      event_id: `evt_${row.id}`,
+      business_id: BID,
+      device_id: 'device_test',
+      entity_type: entityType,
+      entity_id: row.id,
+      operation: 'create',
+      entity_version: row.entity_version,
+      timestamp: NOW,
+      payload: row as unknown as Readonly<Record<string, unknown>>,
+      payload_hash: `hash_${row.id}`,
+      previous_hash: null,
+      sync_status: 'LOCAL_ONLY',
+    });
+    await producer.writeJournalEvents([
+      event(purchase, 'purchase'),
+      event(supplierPayment, 'payment'),
+      event(supplierAdvance, 'advance'),
+    ]);
+
+    await rebuildFromDrive(provider, {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+
+    expect(await db.purchases.get(purchase.id)).toMatchObject({
+      paid_paise: 5000,
+      balance_paise: 6800,
+      status: 'partial',
+    });
+  });
+
+  it('rebuilds Sales Return balance reductions and moving-average inventory cost', async () => {
+    const salesReturn: SalesReturn = {
+      id: 'sr_balance',
+      business_id: BID,
+      return_number: 'SR-BALANCE',
+      return_date: '2026-08-20',
+      original_invoice_id: inv1.id,
+      customer_id: cust1.id,
+      subtotal_paise: 10000,
+      discount_paise: 0,
+      taxable_paise: 10000,
+      cgst_paise: 900,
+      sgst_paise: 900,
+      igst_paise: 0,
+      cess_paise: 0,
+      round_off_paise: 0,
+      round_off_mode: 'none',
+      pre_round_total_paise: 11800,
+      total_paise: 11800,
+      apply_to_balance_paise: 11800,
+      customer_credit_paise: 0,
+      status: 'posted',
+      reason: 'damaged',
+      notes: '',
+      journal_entry_id: 'je_sr_balance',
+      reversed_credit_note_invoice_id: null,
+      legacy_migration_classification: null,
+      device_id: 'device_test',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    const laterPurchase: StockMovement = {
+      id: 'mv_later_purchase',
+      business_id: BID,
+      item_id: item.id,
+      warehouse_id: warehouse.id,
+      movement_type: 'purchase',
+      qty_micros: 100_000_000,
+      unit_cost_paise: 12000,
+      ref_type: 'purchase',
+      ref_id: 'purchase_later',
+      occurred_at: '2026-08-20T08:00:00.000Z',
+      notes: '',
+    };
+    const laterSale: StockMovement = {
+      id: 'mv_later_sale',
+      business_id: BID,
+      item_id: item.id,
+      warehouse_id: warehouse.id,
+      movement_type: 'sale',
+      qty_micros: -50_000_000,
+      unit_cost_paise: 10020,
+      ref_type: 'invoice',
+      ref_id: 'inv_later',
+      occurred_at: '2026-08-20T09:00:00.000Z',
+      notes: '',
+    };
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    const event = (
+      row: SalesReturn | StockMovement,
+      entityType: SyncEvent['entity_type'],
+    ): SyncEvent => ({
+      event_id: `evt_${row.id}`,
+      business_id: BID,
+      device_id: 'device_test',
+      entity_type: entityType,
+      entity_id: row.id,
+      operation: 'create',
+      entity_version: 1,
+      timestamp:
+        entityType === 'sales_return'
+          ? '2026-08-20T07:00:00.000Z'
+          : (row as StockMovement).occurred_at,
+      payload: row as unknown as Readonly<Record<string, unknown>>,
+      payload_hash: `hash_${row.id}`,
+      previous_hash: null,
+      sync_status: 'LOCAL_ONLY',
+    });
+    await producer.writeJournalEvents([
+      event(salesReturn, 'sales_return'),
+      event(laterPurchase, 'stock_movement'),
+      event(laterSale, 'stock_movement'),
+    ]);
+
+    await rebuildFromDrive(provider, {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+
+    expect(await db.invoices.get(inv1.id)).toMatchObject({
+      paid_paise: 10000,
+      balance_paise: 1800,
+      status: 'partial',
+    });
+    expect(
+      await db.item_stock
+        .where('[business_id+item_id+warehouse_id]')
+        .equals([BID, item.id, warehouse.id])
+        .first(),
+    ).toMatchObject({
+      qty_micros: 148_000_000,
+      avg_cost_paise: 10020,
+    });
+  });
+
+  it('removes stale stock cache rows when no movements remain', async () => {
+    const emptyRoot = await mktmp();
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: emptyRoot });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    await producer.writeJournalEvents([
+      {
+        event_id: 'evt_business_only',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'business',
+        entity_id: business.id,
+        operation: 'create',
+        entity_version: business.entity_version,
+        timestamp: NOW,
+        payload: business,
+        payload_hash: 'hash_business_only',
+        previous_hash: null,
+        sync_status: 'LOCAL_ONLY',
+      },
+    ]);
+    await db.item_stock.add({
+      id: `${BID}:stale:warehouse`,
+      business_id: BID,
+      item_id: 'stale',
+      warehouse_id: 'warehouse',
+      qty_micros: 99_000_000,
+      avg_cost_paise: 9999,
+      updated_at: NOW,
+    });
+
+    await rebuildFromDrive(new LocalFolderStorageProvider(), {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: emptyRoot },
+    });
+
+    expect(await db.item_stock.where('business_id').equals(BID).count()).toBe(0);
+    await fs.rm(emptyRoot, { recursive: true, force: true });
   });
 
   it('replaces only the selected business and preserves other local businesses', async () => {
