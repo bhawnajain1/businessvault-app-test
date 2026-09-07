@@ -4,6 +4,19 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.5 — 2026-09-07
+
+### Added
+
+- **Permanent invoice deletion from the Recycle Bin.** A new **Delete permanently** action removes a recycled invoice header, its lines, and derived return-summary rows after explicit confirmation. Accounting journals and sync history remain append-only so financial reports and the audit trail are preserved. Invoices referenced by another invoice or a Sales Return remain protected.
+- **Safe settlement cascade.** Hidden payments allocated only to the deleted invoice and hidden, fully applied advances linked only to it are removed with the invoice. Shared or active payments, shared advances, and advances with unapplied credit block deletion to prevent dangling references or lost customer credit.
+- **Backup/restore replay support.** Permanent-deletion events carry the exact cascaded payment and advance IDs. Replay validates business ownership, cascade tags, exclusive references, and remaining advance credit before removing settlement rows.
+
+### Tests
+
+- Added InvoiceService coverage for permanent deletion, accounting-history preservation, related-document guards, exclusive payment cascade, shared-payment protection, and unapplied-advance protection.
+- Added restore coverage for idempotent permanent-deletion replay and protection of active or changed settlement records.
+
 ## 1.0.4 — 2026-08-27
 
 ### Added
