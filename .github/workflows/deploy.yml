@@ -1,4 +1,4 @@
-name: Build and publish to public build repo
+name: Deploy to GitHub Pages
 
 on:
   push:
@@ -7,13 +7,15 @@ on:
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
 concurrency:
-  group: publish-to-build-repo
+  group: pages
   cancel-in-progress: true
 
 jobs:
-  build-and-publish:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
@@ -23,57 +25,30 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: '20'
-          cache: 'npm'
+          cache: npm
 
       - name: Install
         run: npm ci
 
       - name: Build
         env:
-          # Public build repo is served at /businessvault-app/. Override the
-          # default /BusinessVault/ base so asset paths match the new URL.
-          BV_BASE: /businessvault-app/
-          # Google Identity Services (browser-only OAuth). The client ID is not
-          # a secret — it's designed to be visible in JS — but we route it
-          # through Actions secrets so it isn't hard-coded in source. The
-          # origin allow-list in Google Cloud Console (Authorized JavaScript
-          # origins) is what actually locks it to this deployment.
+          BV_BASE: /businessvault-app-test/
           VITE_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          # Feedback button mailto: target. Kept in a GitHub Actions secret so
-          # the address isn't in git history / source (scrapes -> spam). When
-          # the secret is unset the Feedback button hides itself at runtime.
           VITE_FEEDBACK_EMAIL: ${{ secrets.FEEDBACK_EMAIL }}
         run: npm run build
 
-      - name: Setup SSH deploy key
-        run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
 
-      - name: Publish dist/ to build repo
-        env:
-          GIT_AUTHOR_NAME: businessvault-deploy
-          GIT_AUTHOR_EMAIL: businessvault-deploy@users.noreply.github.com
-          GIT_COMMITTER_NAME: businessvault-deploy
-          GIT_COMMITTER_EMAIL: businessvault-deploy@users.noreply.github.com
-        run: |
-          set -e
-          SRC_SHA="${GITHUB_SHA}"
-          SRC_SHORT="${SRC_SHA:0:7}"
-
-          cd dist
-          # SPA fallback for GitHub Pages — a copy of index.html served as 404.
-          # (public/404.html has its own redirect; this fallback matches it.)
-          touch .nojekyll  # tell Pages not to run Jekyll on this tree
-
-          git init -q -b main
-          git remote add origin git@github.com:bhawnajain1/businessvault-app.git
-          git add -A
-          git commit -q -m "Deploy build from bhawnajain1/BusinessVault@${SRC_SHORT}"
-          # Force push: the build repo is a pure output mirror, history has no value.
-          # Nothing on the build repo is ever hand-authored.
-          GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519 -o UserKnownHostsFile=~/.ssh/known_hosts" \
-            git push --force origin main
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@v4
