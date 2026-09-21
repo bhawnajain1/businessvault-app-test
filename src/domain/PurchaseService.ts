@@ -11,6 +11,7 @@ import type {
 import { appendSyncEvent } from './syncEventLog';
 import { bankersRound, roundOffToNearestRupee } from './gst';
 import { reconcileAfter } from './reconciliation';
+import { log } from '../lib/log';
 
 export interface PurchaseServiceDeps {
   db: BusinessVaultDB;
@@ -658,6 +659,13 @@ export class PurchaseService {
           entity_version: original.entity_version + 1,
         };
         await db.purchases.put(reversed);
+        log.info('purchase.reversed', 'purchase posting reversed', {
+          businessId: original.business_id,
+          purchaseId: original.id,
+          reason,
+          reversalJournalId,
+          totalPaise: original.total_paise,
+        });
 
         await appendSyncEvent(db, {
           businessId: original.business_id,

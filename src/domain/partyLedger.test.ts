@@ -289,6 +289,21 @@ describe('computePayables', () => {
     expect(ap.totals.total_billed_paise).toBe(100_00);
   });
 
+  it('does not expose a cancelled bill as a per-supplier payable entry', () => {
+    const ap = computePayables(
+      [mkPur({ id: 'DELETED', supplier_id: 'S1', total_paise: 250_00, status: 'cancelled' })],
+      '2026-02-01',
+    );
+
+    expect(ap.perPurchase).toEqual([]);
+    expect(ap.perSupplier).toEqual([]);
+    expect(ap.totals).toMatchObject({
+      total_billed_paise: 0,
+      outstanding_paise: 0,
+      bill_count: 0,
+    });
+  });
+
   it('applies supplier-level debit-note pool FIFO to bills (legacy pre-FK debit notes)', () => {
     const bills = [
       mkPur({ id: 'B1', total_paise: 100_00, bill_date: '2026-01-01' }),
