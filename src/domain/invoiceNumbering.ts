@@ -33,6 +33,7 @@ export function parseInvoiceNumber(
 }
 
 function formatInvoiceNumber(prefix: string, sequence: number): string {
+  if (prefix.endsWith('-')) return `${prefix}${sequence}`;
   return `${prefix}${pad(sequence)}`;
 }
 
@@ -41,10 +42,22 @@ function legacyFormatInvoiceNumber(prefix: string, sequence: number): string {
 }
 
 function hasLegacySeriesNumber(rows: Array<{ invoice_number: string }>, prefix: string): boolean {
+  const normalizedPrefix = parsedPrefixForSeries(prefix);
   return rows.some((row) => {
     const parsed = parseInvoiceNumber(row.invoice_number);
-    return parsed?.prefix === prefix && row.invoice_number.startsWith(`${prefix}-`);
+    const legacyMatch = row.invoice_number.match(
+      new RegExp(`^${normalizedPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-([0-9]+)$`),
+    );
+    return (
+      parsed?.prefix === normalizedPrefix &&
+      legacyMatch !== null &&
+      legacyMatch[1].length >= 6
+    );
   });
+}
+
+function parsedPrefixForSeries(prefix: string): string {
+  return prefix.endsWith('-') ? prefix.slice(0, -1) : prefix;
 }
 
 /**
@@ -133,7 +146,7 @@ export async function getNextAvailableInvoiceNumber(
   const byNumber = new Map<string, { anyLive: boolean }>();
   for (const inv of all) {
     const parsed = parseInvoiceNumber(inv.invoice_number);
-    if (!parsed || parsed.prefix !== prefix) continue;
+    if (!parsed || parsed.prefix !== parsedPrefixForSeries(prefix)) continue;
     const entry = byNumber.get(inv.invoice_number) ?? { anyLive: false };
     const live = !inv.deleted_at && !inv.reversed_by_invoice_id;
     if (live) entry.anyLive = true;
@@ -189,7 +202,7 @@ export async function allocateInvoiceNumber(
     const byNumber = new Map<string, { anyLive: boolean }>();
     for (const inv of all) {
       const parsed = parseInvoiceNumber(inv.invoice_number);
-      if (!parsed || parsed.prefix !== prefix) continue;
+     if (!parsed || parsed.prefix !== parsedPrefixForSeries(prefix)) continue;
       const entry = byNumber.get(inv.invoice_number) ?? { anyLive: false };
       const live = !inv.deleted_at && !inv.reversed_by_invoice_id;
       if (live) entry.anyLive = true;

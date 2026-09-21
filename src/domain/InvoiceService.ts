@@ -360,14 +360,16 @@ export class InvoiceService {
         const parsedNumber = parseInvoiceNumber(input.invoice_number);
         if (parsedNumber) {
           const business = await this.db.businesses.get(input.business_id);
-          const isSeriesNumber =
-            business &&
-            (parsedNumber.prefix === business.invoice_prefix ||
-              !input.invoice_number.trim().includes('-'));
-          if (business && isSeriesNumber) {
+          if (business) {
+            const enteredNumber = input.invoice_number.trim();
+            const digitMatch = enteredNumber.match(/(\d+)$/);
+            const seriesPrefix =
+              enteredNumber.includes('-') && (digitMatch?.[1].length ?? 0) < 6
+                ? `${parsedNumber.prefix}-`
+                : parsedNumber.prefix;
             const nextSeq = Math.max(business.invoice_next_seq, parsedNumber.sequence + 1);
             await this.db.businesses.update(input.business_id, {
-              invoice_prefix: parsedNumber.prefix,
+              invoice_prefix: seriesPrefix,
               invoice_next_seq: nextSeq,
               updated_at: now,
             });

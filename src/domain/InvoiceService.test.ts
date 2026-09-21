@@ -1437,6 +1437,27 @@ describe('InvoiceService — editable invoice number (feedback §3 §4)', () => 
     expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('TS003');
   });
 
+  it('continues a manually entered hyphenated series exactly', async () => {
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'bill-26',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    const business = await db.businesses.get(businessId);
+    expect(business?.invoice_prefix).toBe('bill-');
+    expect(business?.invoice_next_seq).toBe(27);
+    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('bill-27');
+    expect(await allocateInvoiceNumber(db, businessId)).toBe('bill-27');
+  });
+
   it('rejects duplicate manual invoice numbers with a clear error', async () => {
     const input = {
       business_id: businessId,
