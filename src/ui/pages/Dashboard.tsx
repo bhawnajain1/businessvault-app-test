@@ -20,13 +20,22 @@ export default function Dashboard() {
       // filtering / derivation lives in src/domain/dashboardStats.ts so
       // it can be unit-tested without React. Prior regression (PR #52):
       // summing raw `balance_paise` double-counted rename-edit trios.
-      const [invoices, purchases, customers, suppliers, advances, itemCount] =
+      const [
+        invoices,
+        purchases,
+        customers,
+        suppliers,
+        advances,
+        salesReturns,
+        itemCount,
+      ] =
         await Promise.all([
           db.invoices.where('business_id').equals(businessId).toArray(),
           db.purchases.where('business_id').equals(businessId).toArray(),
           db.customers.where('business_id').equals(businessId).toArray(),
           db.suppliers.where('business_id').equals(businessId).toArray(),
           db.advances.where('business_id').equals(businessId).toArray(),
+          db.sales_returns.where('business_id').equals(businessId).toArray(),
           db.items.where('business_id').equals(businessId).count(),
         ]);
 
@@ -37,6 +46,7 @@ export default function Dashboard() {
         customers,
         suppliers,
         advances,
+        salesReturns,
         itemCount,
         asOfYmd,
       });

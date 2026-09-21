@@ -194,6 +194,35 @@ describe('PaymentService.createPayment', () => {
     expect(inv?.status).toBe('paid');
   });
 
+  it('reuses a payment with the same business and payment number without reposting', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-idempotent', 100000));
+    const svc = new PaymentService(db);
+    const input = {
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-IDEMPOTENT',
+      payment_date: '2026-08-19',
+      direction: 'in' as const,
+      party_type: 'customer' as const,
+      party_id: 'cust-1',
+      method: 'cash' as const,
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 60000,
+      allocations: [{ invoice_id: 'inv-idempotent', amount_paise: 60000 }],
+    };
+
+    const first = await svc.createPayment(input);
+    const second = await svc.createPayment(input);
+
+    expect(second.id).toBe(first.id);
+    expect(await db.payments.count()).toBe(1);
+    expect((await db.invoices.get('inv-idempotent'))?.paid_paise).toBe(60000);
+    expect(await db.journal_entries.count()).toBe(1);
+  });
+
   it('refuses over-allocation vs payment amount', async () => {
     const db = freshDb();
     await seed(db);
@@ -637,6 +666,48 @@ describe('PaymentService.refundPayment', () => {
         reason: 'no',
       }),
     ).rejects.toBeInstanceOf(PaymentValidationError);
+  });
+
+  it('refuses a second refund of the original payment', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-double-refund', 100000));
+    const svc = new PaymentService(db);
+    const original = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-DOUBLE-REFUND',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 10000,
+      allocations: [{ invoice_id: 'inv-double-refund', amount_paise: 10000 }],
+    });
+
+    await svc.refundPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: original.id,
+      refund_payment_number: 'PAY-DOUBLE-REFUND-R1',
+      refund_date: '2026-08-20',
+      reason: 'first refund',
+    });
+
+    await expect(
+      svc.refundPayment({
+        business_id: BIZ,
+        device_id: DEV,
+        payment_id: original.id,
+        refund_payment_number: 'PAY-DOUBLE-REFUND-R2',
+        refund_date: '2026-08-21',
+        reason: 'second refund',
+      }),
+    ).rejects.toThrow('already been refunded');
+    expect(await db.payments.count()).toBe(2);
   });
 });
 

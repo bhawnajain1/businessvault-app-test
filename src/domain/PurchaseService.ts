@@ -735,6 +735,13 @@ export class PurchaseService {
     if (original.status === 'cancelled') {
       throw new Error('Cannot edit a cancelled purchase');
     }
+    if (original.paid_paise > 0) {
+      throw new Error('Cannot edit a bill with payments applied; reverse or migrate the payments first.');
+    }
+    const payments = await this.db.payments.where('business_id').equals(original.business_id).toArray();
+    if (payments.some((payment) => payment.allocations.some((allocation) => allocation.bill_id === purchaseId))) {
+      throw new Error('Cannot edit a bill referenced by a payment; reverse or migrate the payment first.');
+    }
     const reversed = await this.reversePurchasePosting(purchaseId, input.deviceId, 'edit');
     const reissued = await this.create(input);
     const now = this.now();

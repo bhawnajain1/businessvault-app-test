@@ -1404,7 +1404,9 @@ describe('InvoiceService — round-off modes (feedback §1)', () => {
 });
 
 describe('InvoiceService — editable invoice number (feedback §3 §4)', () => {
-  it('validateInvoiceNumber accepts well-formed numbers and rejects garbage', () => {
+  it('validateInvoiceNumber accepts compact and legacy numbers and rejects garbage', () => {
+    expect(validateInvoiceNumber('INV001').ok).toBe(true);
+    expect(validateInvoiceNumber('TS002', 'TS').ok).toBe(true);
     expect(validateInvoiceNumber('INV-000123').ok).toBe(true);
     expect(validateInvoiceNumber('INV-000123', 'INV').ok).toBe(true);
     const wrongPrefix = validateInvoiceNumber('INV-000123', 'SI');
@@ -1414,6 +1416,45 @@ describe('InvoiceService — editable invoice number (feedback §3 §4)', () => 
     expect(validateInvoiceNumber('nonumber').ok).toBe(false);
     expect(validateInvoiceNumber('INV-').ok).toBe(false);
     expect(validateInvoiceNumber('a'.repeat(50)).ok).toBe(false);
+  });
+
+  it('advances the business series after a manually numbered invoice', async () => {
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'TS002',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    expect((await db.businesses.get(businessId))?.invoice_prefix).toBe('TS');
+    expect((await db.businesses.get(businessId))?.invoice_next_seq).toBe(3);
+    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('TS003');
+  });
+
+  it('rejects duplicate manual invoice numbers with a clear error', async () => {
+    const input = {
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'TS002',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    };
+    await service.createInvoice(input);
+
+    await expect(service.createInvoice(input)).rejects.toThrow(
+      'Invoice number "TS002" already exists and is already in use by this business',
+    );
   });
 
   it('isInvoiceNumberAvailable ignores recycled and superseded rows', async () => {

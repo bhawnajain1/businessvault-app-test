@@ -20,6 +20,7 @@ import type {
   Customer,
   Invoice,
   Purchase,
+  SalesReturn,
   Supplier,
 } from '../db/types';
 import { computePayables, computeReceivables } from './partyLedger';
@@ -83,6 +84,7 @@ export interface DashboardInputs {
   customers: Customer[];
   suppliers: Supplier[];
   advances: Advance[];
+  salesReturns?: SalesReturn[];
   itemCount: number;
   asOfYmd: string;
   recentLimit?: number;
@@ -107,7 +109,13 @@ export function computeDashboardStats(inputs: DashboardInputs): DashboardStats {
   // /reports/receivables-payables page uses. Anything else is a drift
   // waiting to happen. See dashboardStats.test.ts:"coherence with
   // computeReceivables" for the pin.
-  const ar = computeReceivables(invoices, asOfYmd, advances, customers);
+  const ar = computeReceivables(
+    invoices,
+    asOfYmd,
+    advances,
+    customers,
+    inputs.salesReturns ?? [],
+  );
   const ap = computePayables(purchases, asOfYmd, advances, suppliers);
 
   const customerNameById = new Map(customers.map((c) => [c.id, c.name]));

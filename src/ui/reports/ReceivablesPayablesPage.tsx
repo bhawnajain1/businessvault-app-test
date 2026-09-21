@@ -45,7 +45,7 @@ export default function ReceivablesPayablesPage() {
     setErr(null);
     (async () => {
       try {
-        const [invoices, customers, bills, suppliers, advances] = await Promise.all([
+        const [invoices, customers, bills, suppliers, advances, salesReturns] = await Promise.all([
           db.invoices.where('business_id').equals(businessId).toArray() as Promise<
             Invoice[]
           >,
@@ -61,9 +61,16 @@ export default function ReceivablesPayablesPage() {
           db.advances.where('business_id').equals(businessId).toArray() as Promise<
             Advance[]
           >,
+          db.sales_returns.where('business_id').equals(businessId).toArray(),
         ]);
         const asOfYmd = todayYmd();
-        const ar = computeReceivables(invoices, asOfYmd, advances, customers);
+        const ar = computeReceivables(
+          invoices,
+          asOfYmd,
+          advances,
+          customers,
+          salesReturns,
+        );
         const ap = computePayables(bills, asOfYmd, advances, suppliers);
         const customerById = new Map(customers.map((c) => [c.id, c]));
         const supplierById = new Map(suppliers.map((s) => [s.id, s]));

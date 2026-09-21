@@ -17,6 +17,7 @@ import { canonicalJson, sha256Hex, GENESIS_HASH } from '../journal/event';
 import { bankersRound, roundOffToNearestRupee } from './gst';
 import {
   isInvoiceNumberAvailable,
+  parseInvoiceNumber,
   validateInvoiceNumber,
 } from './invoiceNumbering';
 import { log } from '../lib/log';
@@ -305,6 +306,7 @@ export class InvoiceService {
       'rw',
       [
         this.db.invoices,
+        this.db.businesses,
         this.db.invoice_lines,
         this.db.items,
         this.db.item_stock,
@@ -350,10 +352,27 @@ export class InvoiceService {
           .first();
         if (dupe) {
           throw new Error(
-            `Invoice number ${input.invoice_number} already exists. Save cancelled to prevent a duplicate.`,
+            `Invoice number "${input.invoice_number}" already exists and is already in use by this business. Choose a different invoice number.`,
           );
         }
         await this.db.invoices.add(invoice);
+
+        const parsedNumber = parseInvoiceNumber(input.invoice_number);
+        if (parsedNumber) {
+          const business = await this.db.businesses.get(input.business_id);
+          const isSeriesNumber =
+            business &&
+            (parsedNumber.prefix === business.invoice_prefix ||
+              !input.invoice_number.trim().includes('-'));
+          if (business && isSeriesNumber) {
+            const nextSeq = Math.max(business.invoice_next_seq, parsedNumber.sequence + 1);
+            await this.db.businesses.update(input.business_id, {
+              invoice_prefix: parsedNumber.prefix,
+              invoice_next_seq: nextSeq,
+              updated_at: now,
+            });
+          }
+        }
 
         // 2. invoice_lines rows + one sync event per line so restore can
         //    rehydrate the ledger. Handlers live at eventHandlers.ts.
@@ -1290,8 +1309,7 @@ export class InvoiceService {
       proposedNumber.length > 0 && proposedNumber !== original.invoice_number;
     if (isRename) {
       const biz = await this.db.businesses.get(original.business_id);
-      const prefix = biz?.invoice_prefix || 'INV';
-      const format = validateInvoiceNumber(proposedNumber, prefix);
+      const format = validateInvoiceNumber(proposedNumber);
       if (!format.ok) throw new Error(format.error);
       // Exclude the row being edited from the uniqueness check — createInvoice
       // will supersede it in the same call, so its existing number would
@@ -1304,7 +1322,7 @@ export class InvoiceService {
       );
       if (!free) {
         throw new Error(
-          `Invoice number ${proposedNumber} is already in use. Pick a different number.`,
+          `Invoice number "${proposedNumber}" already exists and is already in use by this business. Choose a different invoice number.`,
         );
       }
     }

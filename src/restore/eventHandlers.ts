@@ -63,6 +63,10 @@ const put =
   <T>(table: (db: BusinessVaultDB) => { put(v: T): Promise<unknown> }) =>
   async (evt: SyncEvent, ctx: HandlerContext): Promise<void> => {
     const row = asRecord(evt.payload, evt.event_id) as unknown as T;
+    const businessId = (row as { business_id?: string }).business_id;
+    if (businessId && businessId !== ctx.businessId) {
+      throw new Error(`event ${evt.event_id}: row belongs to another business`);
+    }
     await table(ctx.db).put(row);
   };
 
@@ -95,6 +99,12 @@ const merge =
       throw new Error(
         `event ${evt.event_id}: ${entityType} ${id} belongs to another business`,
       );
+    }
+    const currentVersion = (existing as { entity_version?: number }).entity_version ?? 0;
+    const eventVersion = evt.entity_version ?? Number(patch.entity_version ?? 0);
+    if (eventVersion > 0 && currentVersion >= eventVersion) {
+      ctx.diagnostics.push(`${entityType}:update ${id}: stale event ignored`);
+      return;
     }
     const next = {
       ...existing,

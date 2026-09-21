@@ -17,6 +17,7 @@ import type {
 import { GENESIS_HASH, canonicalJson, sha256Hex } from '../journal/event';
 import { SYSTEM_ACCOUNT_CODES, findAccountByCode } from './coa';
 import { reconcileAfter } from './reconciliation';
+import { log } from '../lib/log';
 
 // UI-facing payment split — three tendered methods plus "credit" (unpaid).
 // Credit does NOT produce a Payment row; the invoice balance already reflects it.
@@ -192,10 +193,22 @@ export class PaymentService {
           .where('[business_id+payment_number]')
           .equals([input.business_id, input.payment_number])
           .first();
-        if (existing) return existing;
+        if (existing) {
+          log.info('payment', 'idempotent payment create reused existing row', {
+            businessId: input.business_id,
+            paymentNumber: input.payment_number,
+            paymentId: existing.id,
+          });
+          return existing;
+        }
 
         await this.applyAllocationsToTargets(
-          { business_id: input.business_id, direction: input.direction },
+          {
+            business_id: input.business_id,
+            direction: input.direction,
+            party_type: input.party_type,
+            party_id: input.party_id,
+          },
           allocationsPreview,
           'apply',
         );
@@ -289,6 +302,15 @@ export class PaymentService {
           });
         }
 
+        log.info('payment', 'payment created', {
+          businessId: input.business_id,
+          paymentId,
+          paymentNumber: input.payment_number,
+          amountPaise: input.amount_paise,
+          allocationCount: allocationsPreview.length,
+          advanceAmountPaise: advanceAmount,
+        });
+
         return paymentPreview;
       },
     );
@@ -324,6 +346,14 @@ export class PaymentService {
       throw new PaymentValidationError(
         `journal_entry ${original.journal_entry_id} not found`,
       );
+    }
+    if (originalEntry.reversed_by_id) {
+      log.warn('payment', 'refund rejected: payment already reversed', {
+        businessId: input.business_id,
+        paymentId: original.id,
+        reversalJournalId: originalEntry.reversed_by_id,
+      });
+      throw new PaymentValidationError('payment has already been refunded');
     }
     const originalLines = await this.db.journal_lines
       .where('[business_id+entry_id]')
@@ -420,7 +450,12 @@ export class PaymentService {
       ],
       async () => {
         await this.applyAllocationsToTargets(
-          { business_id: input.business_id, direction: original.direction },
+          {
+            business_id: input.business_id,
+            direction: original.direction,
+            party_type: original.party_type,
+            party_id: original.party_id,
+          },
           original.allocations,
           'reverse',
         );
@@ -487,6 +522,12 @@ export class PaymentService {
     // paid_paise / advance remaining figures agree post-refund.
     await reconcileAfter(input.business_id, 'payment.refund', {
       db: this.db,
+    });
+    log.info('payment', 'payment refunded', {
+      businessId: input.business_id,
+      paymentId: original.id,
+      refundPaymentId: refunded.id,
+      amountPaise: original.amount_paise,
     });
     return refunded;
   }
@@ -596,7 +637,12 @@ export class PaymentService {
 
 
   private async applyAllocationsToTargets(
-    ctx: { business_id: string; direction: PaymentDirection },
+    ctx: {
+      business_id: string;
+      direction: PaymentDirection;
+      party_type?: Payment['party_type'];
+      party_id?: string;
+    },
     allocations: PaymentAllocation[],
     mode: 'apply' | 'reverse',
   ): Promise<void> {
@@ -611,6 +657,9 @@ export class PaymentService {
         }
         if (inv.business_id !== ctx.business_id) {
           throw new PaymentValidationError('invoice business_id mismatch');
+        }
+        if (ctx.party_type === 'customer' && ctx.party_id && inv.customer_id !== ctx.party_id) {
+          throw new PaymentValidationError('invoice belongs to a different customer');
         }
         if (mode === 'apply' && a.amount_paise > inv.balance_paise) {
           throw new PaymentValidationError(
@@ -639,6 +688,9 @@ export class PaymentService {
         }
         if (bill.business_id !== ctx.business_id) {
           throw new PaymentValidationError('bill business_id mismatch');
+        }
+        if (ctx.party_type === 'supplier' && ctx.party_id && bill.supplier_id !== ctx.party_id) {
+          throw new PaymentValidationError('bill belongs to a different supplier');
         }
         if (mode === 'apply' && a.amount_paise > bill.balance_paise) {
           throw new PaymentValidationError(
