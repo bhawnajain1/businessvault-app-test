@@ -23,6 +23,7 @@ import type {
   SalesReturnItem,
   StockMovement,
 } from '../db/types';
+import { applyEvent } from './eventHandlers';
 
 // jsdom Blob has no arrayBuffer; force Node's.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -527,6 +528,31 @@ describe('rebuildFromDrive', () => {
   let root: string;
   let db: BusinessVaultDB;
   let provider: LocalFolderStorageProvider;
+
+  it('rejects journal events from another business before dispatch', async () => {
+    const testDb = new BusinessVaultDB(`bv-event-scope-${Date.now()}-${Math.random()}`);
+    const diagnostics: string[] = [];
+    await expect(
+      applyEvent(
+        {
+          event_id: 'evt-wrong-business',
+          business_id: 'other-business',
+          device_id: 'device-1',
+          entity_type: 'customer',
+          entity_id: 'customer-1',
+          operation: 'create',
+          entity_version: 1,
+          timestamp: new Date().toISOString(),
+          payload: { id: 'customer-1', business_id: 'other-business' },
+          payload_hash: 'hash',
+          previous_hash: null,
+          sync_status: 'SYNCED',
+        },
+        { db: testDb, businessId: BID, diagnostics },
+      ),
+    ).rejects.toThrow('belongs to business other-business');
+    await testDb.delete();
+  });
 
   beforeEach(async () => {
     root = await mktmp();

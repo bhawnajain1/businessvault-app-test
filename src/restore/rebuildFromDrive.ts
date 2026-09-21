@@ -425,7 +425,12 @@ export async function rebuildFromDrive(
               diagnostics,
             });
             if (result === 'applied') replayed++;
-            else unhandled++;
+            else {
+              unhandled++;
+              diagnostics.push(
+                `event ${evt.event_id} (${evt.entity_type}:${evt.operation}) has no replay handler`,
+              );
+            }
           } catch (err) {
             log.warn('restore.replay.event-failed', 'restore: journal event replay failed', {
               businessId: selected.businessId,
@@ -464,7 +469,7 @@ export async function rebuildFromDrive(
   progress('Verifying accounting and inventory', 90);
   const issues: DiagnosticIssue[] = [];
   for (const d of diagnostics) {
-    issues.push({ severity: 'warning', code: 'REPLAY_WARNING', message: d });
+    issues.push({ severity: 'error', code: 'REPLAY_FAILURE', message: d });
   }
 
   const acct = await accountingSelfCheck(selected.businessId, { db: opts.db });

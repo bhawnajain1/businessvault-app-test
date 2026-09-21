@@ -60,12 +60,23 @@ function asRecord(v: unknown, evtId: string): Record<string, unknown> {
 }
 
 const put =
-  <T>(table: (db: BusinessVaultDB) => { put(v: T): Promise<unknown> }) =>
+  <T extends { id: string; business_id?: string; entity_version?: number }>(
+    table: (db: BusinessVaultDB) => {
+      get(id: string): Promise<T | undefined>;
+      put(v: T): Promise<unknown>;
+    },
+  ) =>
   async (evt: SyncEvent, ctx: HandlerContext): Promise<void> => {
     const row = asRecord(evt.payload, evt.event_id) as unknown as T;
     const businessId = (row as { business_id?: string }).business_id;
     if (businessId && businessId !== ctx.businessId) {
       throw new Error(`event ${evt.event_id}: row belongs to another business`);
+    }
+    const existing = await table(ctx.db).get(row.id);
+    const eventVersion = evt.entity_version ?? row.entity_version ?? 0;
+    if (existing && eventVersion > 0 && (existing.entity_version ?? 0) >= eventVersion) {
+      ctx.diagnostics.push(`${evt.entity_type}:create ${row.id}: stale event ignored`);
+      return;
     }
     await table(ctx.db).put(row);
   };
@@ -129,8 +140,8 @@ const merge =
   };
 
 const HANDLERS: Record<string, EventHandler> = {
-  'business:create': put<unknown>((db) => db.businesses),
-  'business:created': put<unknown>((db) => db.businesses),
+  'business:create': put((db) => db.businesses),
+  'business:created': put((db) => db.businesses),
   'business:update': merge('business', (db) => db.businesses),
   'business:updated': merge('business', (db) => db.businesses),
 
@@ -596,6 +607,19 @@ export async function applyEvent(
   evt: SyncEvent,
   ctx: HandlerContext,
 ): Promise<'applied' | 'unhandled'> {
+  if (evt.business_id !== ctx.businessId) {
+    throw new Error(
+      `event ${evt.event_id}: event belongs to business ${evt.business_id}, expected ${ctx.businessId}`,
+    );
+  }
+  if (evt.payload && typeof evt.payload === 'object' && !Array.isArray(evt.payload)) {
+    const payloadBusinessId = (evt.payload as { business_id?: unknown }).business_id;
+    if (typeof payloadBusinessId === 'string' && payloadBusinessId !== ctx.businessId) {
+      throw new Error(
+        `event ${evt.event_id}: payload belongs to business ${payloadBusinessId}, expected ${ctx.businessId}`,
+      );
+    }
+  }
   const h = getEventHandler(evt.entity_type, evt.operation);
   if (!h) {
     log.warn('restore.event.unhandled', 'restore: no event handler registered', {
