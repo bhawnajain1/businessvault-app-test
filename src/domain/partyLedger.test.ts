@@ -277,6 +277,18 @@ describe('computePayables', () => {
     expect(ap.totals.outstanding_paise).toBe(130_00);
   });
 
+  it('excludes deleted/cancelled bills from payable entries and supplier totals', () => {
+    const bills = [
+      mkPur({ id: 'LIVE', total_paise: 100_00 }),
+      mkPur({ id: 'DELETED', total_paise: 250_00, status: 'cancelled' }),
+    ];
+    const ap = computePayables(bills, '2026-02-01');
+
+    expect(ap.perPurchase.map((row) => row.purchase_id)).toEqual(['LIVE']);
+    expect(ap.totals.outstanding_paise).toBe(100_00);
+    expect(ap.totals.total_billed_paise).toBe(100_00);
+  });
+
   it('applies supplier-level debit-note pool FIFO to bills (legacy pre-FK debit notes)', () => {
     const bills = [
       mkPur({ id: 'B1', total_paise: 100_00, bill_date: '2026-01-01' }),

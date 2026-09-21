@@ -13,6 +13,7 @@ import type {
   Invoice,
 } from '../../db/types';
 import { PaymentService } from '../../domain/PaymentService';
+import { isActivePurchase } from '../../domain/partyLedger';
 import { SYSTEM_ACCOUNT_CODES } from '../../domain/coa';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
@@ -88,7 +89,7 @@ export default function PaymentsPage() {
         .map((i) => ({ id: i.id, number: i.invoice_number, balancePaise: i.balance_paise }));
     }
     return purchases
-      .filter((p) => p.supplier_id === entryPartyId && p.balance_paise > 0 && p.status !== 'cancelled')
+      .filter((p) => p.supplier_id === entryPartyId && p.balance_paise > 0 && isActivePurchase(p))
       .map((p) => ({ id: p.id, number: p.bill_number, balancePaise: p.balance_paise }));
   }, [entryDirection, entryPartyId, invoices, purchases]);
 

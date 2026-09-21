@@ -13,6 +13,7 @@ import type {
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import Money from '../components/Money';
 import { streamCsvExport } from '../../csv/streamCsvExport';
+import { isActivePurchase } from '../../domain/partyLedger';
 
 // A single running-balance ledger row for one party (customer or supplier).
 // For a customer we build receivables: invoices increase balance owed BY them,
@@ -456,7 +457,7 @@ function buildSupplierRows(
   const out: LedgerRow[] = [];
 
   for (const bill of bills) {
-    if (bill.status === 'cancelled') continue;
+    if (!isActivePurchase(bill)) continue;
     if (bill.total_paise < 0) {
       // debit note (purchase return)
       out.push({

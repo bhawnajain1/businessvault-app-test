@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { db } from '../../db';
 import type { Advance, Payment, Purchase, Supplier } from '../../db/types';
 import { createSupplierService } from '../../domain/SupplierService';
+import { isActivePurchase } from '../../domain/partyLedger';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
 import Drawer from '../components/Drawer';
@@ -99,7 +100,7 @@ export default function SuppliersPage() {
         return created;
       };
       for (const bill of bills) {
-        if (bill.status === 'cancelled' || bill.status === 'draft' || bill.reverses_purchase_id) continue;
+        if (!isActivePurchase(bill) || bill.status === 'draft' || bill.reverses_purchase_id) continue;
         const paid = paidByBill.get(bill.id) ?? bill.paid_paise;
         rollup(bill.supplier_id).payable_paise += Math.max(0, bill.total_paise - paid);
       }

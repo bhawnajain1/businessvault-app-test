@@ -84,6 +84,10 @@ export interface SupplierPayable {
   aging: AgingBuckets;
 }
 
+export function isActivePurchase(purchase: Purchase): boolean {
+  return purchase.status !== 'cancelled';
+}
+
 // --- Pure helpers ---
 
 // Whole-day difference between two YYYY-MM-DD dates. Positive = second is later.
@@ -347,7 +351,7 @@ export function computePayables(
   advances: Advance[] = [],
   suppliers: Supplier[] = [],
 ): DerivedPayables {
-  const usable = purchases.filter((p) => p.status !== 'cancelled');
+  const usable = purchases.filter(isActivePurchase);
   const originals = usable.filter(
     (p) => p.total_paise > 0 && !p.reverses_purchase_id,
   );
