@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { db } from '../../db';
 import Money from '../components/Money';
@@ -8,14 +7,12 @@ import {
   type DashboardStats,
 } from '../../domain/dashboardStats';
 import { log } from '../../lib/log';
+import { useLiveQuery } from '../hooks/useLiveQuery';
 
 export default function Dashboard() {
   const { businessId, loading } = useActiveBusiness();
-  const [stats, setStats] = useState<DashboardStats | null>(null);
-
-  useEffect(() => {
-    if (!businessId) return;
-    (async () => {
+  const stats = useLiveQuery<DashboardStats | null>(async () => {
+    if (!businessId) return null;
       // Thin shim: load rows, hand to the pure computeDashboardStats. All
       // filtering / derivation lives in src/domain/dashboardStats.ts so
       // it can be unit-tested without React. Prior regression (PR #52):
@@ -84,9 +81,8 @@ export default function Dashboard() {
         });
       }
 
-      setStats(computed);
-    })();
-  }, [businessId]);
+      return computed;
+  }, [businessId], null);
 
   if (loading) return <div className="p-6 text-slate-500">Loading...</div>;
 

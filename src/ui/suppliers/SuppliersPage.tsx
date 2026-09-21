@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { db } from '../../db';
 import type { Advance, Purchase, Supplier } from '../../db/types';
@@ -17,6 +17,8 @@ import {
   type GstinStatePair,
 } from '../../lib/gstinStateSync';
 import GstinStateBadge from '../components/GstinStateBadge';
+import { useLiveQuery } from '../hooks/useLiveQuery';
+import { log } from '../../lib/log';
 
 interface SupplierRollup {
   payable_paise: number;
@@ -68,12 +70,8 @@ export default function SuppliersPage() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  const [rollups, setRollups] = useState<Map<string, SupplierRollup>>(new Map());
-
-  useEffect(() => {
-    if (!businessId) return;
-    let cancelled = false;
-    (async () => {
+  const rollups = useLiveQuery<Map<string, SupplierRollup>>(async () => {
+    if (!businessId) return new Map();
       const [bills, advances] = await Promise.all([
         db.purchases.where('business_id').equals(businessId).toArray() as Promise<Purchase[]>,
         db.advances.where('business_id').equals(businessId).toArray() as Promise<Advance[]>,
@@ -87,12 +85,15 @@ export default function SuppliersPage() {
           advance_paise: row.advance_paise,
         });
       }
-      if (!cancelled) setRollups(next);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [businessId, reloadKey]);
+      log.info('ui.suppliers.live', 'supplier rollups recomputed from live rows', {
+        businessId,
+        purchaseCount: bills.length,
+        advanceCount: advances.length,
+        supplierCount: supplierRows.length,
+      });
+      return next;
+  }, [businessId], new Map<string, SupplierRollup>());
+  const currentRollups = rollups ?? new Map<string, SupplierRollup>();
 
   function pairFromForm(): GstinStatePair {
     return {
@@ -173,13 +174,13 @@ export default function SuppliersPage() {
       key: 'payable',
       header: 'Payable',
       className: 'text-right',
-      render: (r) => <Money paise={rollups.get(r.id)?.payable_paise ?? r.opening_balance_paise} />,
+      render: (r) => <Money paise={currentRollups.get(r.id)?.payable_paise ?? r.opening_balance_paise} />,
     },
     {
       key: 'advance',
       header: 'Advance',
       className: 'text-right',
-      render: (r) => <Money paise={rollups.get(r.id)?.advance_paise ?? 0} />,
+      render: (r) => <Money paise={currentRollups.get(r.id)?.advance_paise ?? 0} />,
     },
     {
       key: 'opening_balance',
