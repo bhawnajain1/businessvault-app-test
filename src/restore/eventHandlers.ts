@@ -238,6 +238,15 @@ const HANDLERS: Record<string, EventHandler> = {
       }
       existing.reversed_by_purchase_id =
         (p.reversed_by_purchase_id as string | null | undefined) ?? null;
+      for (const field of [
+        'replaces_purchase_id',
+        'replaced_by_purchase_id',
+        'reversal_journal_entry_id',
+        'cancelled_at',
+        'cancel_reason',
+      ] as const) {
+        if (p[field] !== undefined) existing[field] = p[field] as never;
+      }
       if (typeof p.entity_version === 'number') {
         existing.entity_version = p.entity_version;
       }
@@ -268,6 +277,10 @@ const HANDLERS: Record<string, EventHandler> = {
       notes: p.reason
         ? `${existing.notes ? `${existing.notes}\n` : ''}[REVERSED ${evt.timestamp}] ${String(p.reason)}`
         : existing.notes,
+      reversal_journal_entry_id:
+        (p.reversal_journal_id as string | null | undefined) ?? existing.reversal_journal_entry_id ?? null,
+      cancelled_at: existing.cancelled_at ?? evt.timestamp,
+      cancel_reason: (p.reason as string | null | undefined) ?? existing.cancel_reason ?? null,
       updated_at: evt.timestamp,
       entity_version: Math.max(existing.entity_version + 1, evt.entity_version),
     });

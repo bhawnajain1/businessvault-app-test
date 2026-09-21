@@ -9,6 +9,7 @@ import {
   STORES_V6,
   STORES_V7,
   STORES_V8,
+  STORES_V9,
 } from './schema';
 import { ulid } from 'ulid';
 import { pokeSyncWorker } from '../sync/pokeChannel';
@@ -249,6 +250,58 @@ export class BusinessVaultDB extends Dexie {
         }) => {
           if (row.signature_attachment_id === undefined)
             row.signature_attachment_id = null;
+        });
+      });
+
+    this.version(9)
+      .stores(STORES_V9)
+      .upgrade(async (tx) => {
+        const purchasesTable = tx.table('purchases');
+        const journalsTable = tx.table('journal_entries');
+        const purchases = await purchasesTable.toCollection().toArray() as Array<Record<string, any>>;
+        const journals = await journalsTable.toCollection().toArray() as Array<Record<string, any>>;
+        const reversalByOriginal = new Map<string, Record<string, any>>();
+        for (const journal of journals) {
+          if (typeof journal.reverses_id === 'string') reversalByOriginal.set(journal.reverses_id, journal);
+        }
+        const liveByBill = new Map<string, Array<Record<string, any>>>();
+        for (const purchase of purchases) {
+          if (purchase.status === 'cancelled' || purchase.reverses_purchase_id) continue;
+          const bill = String(purchase.bill_number ?? '');
+          const rows = liveByBill.get(bill) ?? [];
+          rows.push(purchase);
+          liveByBill.set(bill, rows);
+        }
+        for (const purchase of purchases) {
+          const bill = String(purchase.bill_number ?? '');
+          if (purchase.status !== 'cancelled' || !/-REV-[A-Z0-9]+$/.test(bill)) continue;
+          const replacementRows = liveByBill.get(bill.replace(/-REV-[A-Z0-9]+$/, '')) ?? [];
+          const reversal = reversalByOriginal.get(String(purchase.journal_entry_id ?? ''));
+          if (replacementRows.length !== 1 || !reversal) continue;
+          const replacement = replacementRows[0];
+          await purchasesTable.update(purchase.id, {
+            replaced_by_purchase_id: replacement.id,
+            reversal_journal_entry_id: reversal.id,
+            cancelled_at: purchase.cancelled_at ?? purchase.updated_at ?? null,
+            cancel_reason: purchase.cancel_reason ?? 'historical edit reversal',
+          });
+          await purchasesTable.update(replacement.id, { replaces_purchase_id: purchase.id });
+          if (purchase.journal_entry_id) {
+            await journalsTable.update(purchase.journal_entry_id, { reversed_by_id: reversal.id });
+          }
+        }
+        await purchasesTable.toCollection().modify((row: {
+          replaces_purchase_id?: string | null;
+          replaced_by_purchase_id?: string | null;
+          reversal_journal_entry_id?: string | null;
+          cancelled_at?: string | null;
+          cancel_reason?: string | null;
+        }) => {
+          if (row.replaces_purchase_id === undefined) row.replaces_purchase_id = null;
+          if (row.replaced_by_purchase_id === undefined) row.replaced_by_purchase_id = null;
+          if (row.reversal_journal_entry_id === undefined) row.reversal_journal_entry_id = null;
+          if (row.cancelled_at === undefined) row.cancelled_at = null;
+          if (row.cancel_reason === undefined) row.cancel_reason = null;
         });
       });
 

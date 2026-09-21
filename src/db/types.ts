@@ -383,6 +383,11 @@ export interface Purchase {
   // supplier-level FIFO pool.
   reversed_by_purchase_id: string | null;
   reverses_purchase_id: string | null;
+  replaces_purchase_id?: string | null;
+  replaced_by_purchase_id?: string | null;
+  reversal_journal_entry_id?: string | null;
+  cancelled_at?: string | null;
+  cancel_reason?: string | null;
   notes: string;
   attachment_id: string | null;
   journal_entry_id: string;

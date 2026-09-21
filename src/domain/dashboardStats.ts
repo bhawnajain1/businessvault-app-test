@@ -38,8 +38,10 @@ export function isLiveInvoice(inv: Invoice): boolean {
 // Symmetric to isLiveInvoice for purchases. Purchase has no `deleted_at`
 // (no recycle-bin on the purchases side yet — see db/types.ts:354).
 export function isLivePurchase(p: Purchase): boolean {
+  if (p.status === 'cancelled') return false;
   if (p.reverses_purchase_id) return false; // debit note
   if (p.reversed_by_purchase_id) return false; // superseded original
+  if (p.replaced_by_purchase_id) return false; // edited original
   return true;
 }
 

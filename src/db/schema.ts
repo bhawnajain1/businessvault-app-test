@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 export const DB_NAME = 'businessvault';
 
@@ -163,4 +163,8 @@ export const STORES_V7: Record<string, string> = {
 // backfilled with null / 0 defaults on upgrade.
 export const STORES_V8: Record<string, string> = {
   ...STORES_V7,
+};
+
+export const STORES_V9: Record<string, string> = {
+  ...STORES_V8,
 };

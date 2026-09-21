@@ -199,16 +199,28 @@ export default function PurchasesPage() {
         r.status === 'cancelled' ? (
           <span className="text-xs text-slate-400">cancelled</span>
         ) : (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              void openEdit(r);
-            }}
-            className="text-xs text-blue-700 hover:underline"
-          >
-            Edit
-          </button>
+          <span>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                void openEdit(r);
+              }}
+              className="text-xs text-blue-700 hover:underline"
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                void cancelPurchase(r);
+              }}
+              className="ml-2 text-xs text-danger hover:underline"
+            >
+              Cancel
+            </button>
+          </span>
         ),
     },
   ];
@@ -275,6 +287,18 @@ export default function PurchasesPage() {
       })),
     );
     setDrawerOpen(true);
+  }
+
+  async function cancelPurchase(purchase: Purchase) {
+    if (!deviceId) return;
+    if (!window.confirm(`Cancel bill ${purchase.bill_number}? Its accounting and stock entries will be reversed.`)) return;
+    setSaveError(null);
+    try {
+      await createPurchaseService({ db }).cancel(purchase.id, deviceId);
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   function openNew() {

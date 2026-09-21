@@ -249,6 +249,62 @@ const migration_v7_to_v8: Migration = {
   },
 };
 
+const migration_v8_to_v9: Migration = {
+  from: 8,
+  to: 9,
+  describe: 'v8 → v9: adds purchase replacement and cancellation metadata',
+  apply(tables) {
+    const purchases = (tables.purchases ?? []).map((row) => ({
+      ...row,
+      replaces_purchase_id: row.replaces_purchase_id ?? null,
+      replaced_by_purchase_id: row.replaced_by_purchase_id ?? null,
+      reversal_journal_entry_id: row.reversal_journal_entry_id ?? null,
+      cancelled_at: row.cancelled_at ?? null,
+      cancel_reason: row.cancel_reason ?? null,
+    })) as Array<Record<string, unknown>>;
+    const journals = (tables.journal_entries ?? []) as Array<Record<string, unknown>>;
+    const byOriginalJournal = new Map<string, Record<string, unknown>>();
+    for (const journal of journals) {
+      if (typeof journal.reverses_id === 'string') {
+        byOriginalJournal.set(journal.reverses_id, journal);
+      }
+    }
+    const liveByBill = new Map<string, Array<Record<string, unknown>>>();
+    for (const purchase of purchases) {
+      const bill = typeof purchase.bill_number === 'string' ? purchase.bill_number : '';
+      if (!bill || purchase.status === 'cancelled' || purchase.reverses_purchase_id) continue;
+      const rows = liveByBill.get(bill) ?? [];
+      rows.push(purchase);
+      liveByBill.set(bill, rows);
+    }
+    for (const purchase of purchases) {
+      const bill = typeof purchase.bill_number === 'string' ? purchase.bill_number : '';
+      if (purchase.status !== 'cancelled' || !/-REV-[A-Z0-9]+$/.test(bill)) continue;
+      const originalBill = bill.replace(/-REV-[A-Z0-9]+$/, '');
+      const replacements = liveByBill.get(originalBill) ?? [];
+      const reversal = typeof purchase.journal_entry_id === 'string'
+        ? byOriginalJournal.get(purchase.journal_entry_id)
+        : undefined;
+      if (replacements.length !== 1 || !reversal || typeof reversal.id !== 'string') continue;
+      const replacement = replacements[0];
+      purchase.replaced_by_purchase_id = replacement.id;
+      purchase.reversal_journal_entry_id = reversal.id;
+      purchase.cancelled_at = purchase.cancelled_at ?? purchase.updated_at ?? null;
+      purchase.cancel_reason = purchase.cancel_reason ?? 'historical edit reversal';
+      replacement.replaces_purchase_id = purchase.id;
+      const originalJournal = journals.find((j) => j.id === purchase.journal_entry_id);
+      if (originalJournal && originalJournal.reversed_by_id == null) {
+        originalJournal.reversed_by_id = reversal.id;
+      }
+    }
+    return {
+      ...tables,
+      purchases,
+      journal_entries: journals,
+    };
+  },
+};
+
 export const MIGRATIONS: Migration[] = [
   migration_v0_to_v1,
   migration_v1_to_v2,
@@ -258,6 +314,7 @@ export const MIGRATIONS: Migration[] = [
   migration_v5_to_v6,
   migration_v6_to_v7,
   migration_v7_to_v8,
+  migration_v8_to_v9,
 ];
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;
