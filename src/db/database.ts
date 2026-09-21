@@ -10,6 +10,7 @@ import {
   STORES_V7,
   STORES_V8,
   STORES_V9,
+  STORES_V10,
 } from './schema';
 import { ulid } from 'ulid';
 import { pokeSyncWorker } from '../sync/pokeChannel';
@@ -302,6 +303,16 @@ export class BusinessVaultDB extends Dexie {
           if (row.reversal_journal_entry_id === undefined) row.reversal_journal_entry_id = null;
           if (row.cancelled_at === undefined) row.cancelled_at = null;
           if (row.cancel_reason === undefined) row.cancel_reason = null;
+        });
+      });
+
+    this.version(10)
+      .stores(STORES_V10)
+      .upgrade(async (tx) => {
+        await tx.table('payments').toCollection().modify((row: {
+          idempotency_key?: string | null;
+        }) => {
+          if (row.idempotency_key === undefined) row.idempotency_key = null;
         });
       });
 

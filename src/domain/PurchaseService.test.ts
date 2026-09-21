@@ -317,4 +317,33 @@ describe('PurchaseService', () => {
     expect(computePayables(await db.purchases.toArray(), '2026-08-19').totals.outstanding_paise).toBe(0);
     expect((await db.item_stock.get(`${BIZ}:item-1:wh-1`))?.qty_micros).toBe(0);
   });
+
+  it('rejects cancelling a purchase already marked as returned', async () => {
+    const db = freshDb();
+    const svc = new PurchaseService({ db });
+    const purchase = await svc.create({
+      businessId: BIZ,
+      deviceId: DEV,
+      billNumber: 'BILL-RETURNED',
+      billDate: '2026-08-19',
+      supplierId: 'sup-1',
+      supplierStateCode: '29',
+      isInterstate: false,
+      financialYear: '2026-27',
+      accounts: ACCOUNTS,
+      lines: [{
+        itemId: 'item-1',
+        warehouseId: 'wh-1',
+        qtyMicros: 1_000_000,
+        unitCostPaise: 5000,
+        taxRateBps: 0,
+      }],
+    });
+    await db.purchases.update(purchase.id, { reversed_by_purchase_id: 'debit-note-1' });
+
+    await expect(svc.cancel(purchase.id, DEV)).rejects.toThrow(
+      'already has a purchase return',
+    );
+    expect((await db.item_stock.get(`${BIZ}:item-1:wh-1`))?.qty_micros).toBe(1_000_000);
+  });
 });

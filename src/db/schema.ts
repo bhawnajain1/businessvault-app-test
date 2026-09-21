@@ -168,3 +168,11 @@ export const STORES_V8: Record<string, string> = {
 export const STORES_V9: Record<string, string> = {
   ...STORES_V8,
 };
+
+// v10: persist payment request identities so retries can be distinguished from
+// accidental reuse of a human-facing payment number.
+export const STORES_V10: Record<string, string> = {
+  ...STORES_V9,
+  payments:
+    'id, business_id, [business_id+payment_number], [business_id+idempotency_key], [business_id+party_type+party_id], [business_id+payment_date], [business_id+direction], updated_at',
+};

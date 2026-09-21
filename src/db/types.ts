@@ -441,6 +441,8 @@ export interface Payment {
   reference: string;
   notes: string;
   allocations: PaymentAllocation[];
+  // Client-supplied retry identity. Optional for legacy payments.
+  idempotency_key?: string | null;
   journal_entry_id: string;
   // Cascade soft-delete: set when the sole invoice this payment is allocated
   // against is deleted via InvoiceService.deleteInvoice. Restore clears it.

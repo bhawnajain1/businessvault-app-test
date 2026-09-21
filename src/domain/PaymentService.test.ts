@@ -223,6 +223,48 @@ describe('PaymentService.createPayment', () => {
     expect(await db.journal_entries.count()).toBe(1);
   });
 
+  it('rejects reusing a payment number with a different payload', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-payment-conflict', 100000));
+    const svc = new PaymentService(db);
+    await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-CONFLICT',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 60000,
+      idempotency_key: 'payment-request-1',
+      allocations: [{ invoice_id: 'inv-payment-conflict', amount_paise: 60000 }],
+    });
+
+    await expect(
+      svc.createPayment({
+        business_id: BIZ,
+        device_id: DEV,
+        payment_number: 'PAY-CONFLICT',
+        payment_date: '2026-08-19',
+        direction: 'in',
+        party_type: 'customer',
+        party_id: 'cust-1',
+        method: 'cash',
+        cash_or_bank_account_id: 'acc-cash',
+        ar_or_ap_account_id: 'acc-ar',
+        amount_paise: 70000,
+        idempotency_key: 'payment-request-2',
+        allocations: [{ invoice_id: 'inv-payment-conflict', amount_paise: 70000 }],
+      }),
+    ).rejects.toThrow('already used by a different payment');
+    expect(await db.payments.count()).toBe(1);
+    expect((await db.invoices.get('inv-payment-conflict'))?.paid_paise).toBe(60000);
+  });
+
   it('refuses over-allocation vs payment amount', async () => {
     const db = freshDb();
     await seed(db);
@@ -708,6 +750,44 @@ describe('PaymentService.refundPayment', () => {
       }),
     ).rejects.toThrow('already been refunded');
     expect(await db.payments.count()).toBe(2);
+  });
+
+  it('reuses a completed refund when retried with the same idempotency key', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-refund-idempotent', 100000));
+    const svc = new PaymentService(db);
+    const original = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-REFUND-IDEMP',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 10000,
+      allocations: [{ invoice_id: 'inv-refund-idempotent', amount_paise: 10000 }],
+    });
+    const input = {
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: original.id,
+      refund_payment_number: 'PAY-REFUND-IDEMP-R',
+      refund_date: '2026-08-20',
+      reason: 'retryable refund',
+      idempotency_key: 'refund-request-1',
+    };
+    const first = await svc.refundPayment(input);
+    const second = await svc.refundPayment({
+      ...input,
+      refund_payment_number: 'PAY-REFUND-IDEMP-R-RETRY',
+    });
+    expect(second.id).toBe(first.id);
+    expect(await db.payments.count()).toBe(2);
+    expect(await db.journal_entries.count()).toBe(2);
   });
 });
 

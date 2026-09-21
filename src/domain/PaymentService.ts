@@ -159,6 +159,7 @@ export class PaymentService {
       reference: input.reference ?? '',
       notes: input.notes ?? '',
       allocations: allocationsPreview,
+      idempotency_key: input.idempotency_key?.trim() || null,
       journal_entry_id: journalEntryId,
       created_at: now,
       updated_at: now,
@@ -194,6 +195,17 @@ export class PaymentService {
           .equals([input.business_id, input.payment_number])
           .first();
         if (existing) {
+          if (!samePaymentRequest(existing, paymentPreview)) {
+            log.warn('payment', 'payment create rejected: identity conflict', {
+              businessId: input.business_id,
+              paymentNumber: input.payment_number,
+              existingPaymentId: existing.id,
+              requestedIdempotencyKey: paymentPreview.idempotency_key,
+            });
+            throw new PaymentValidationError(
+              `payment number "${input.payment_number}" is already used by a different payment`,
+            );
+          }
           log.info('payment', 'idempotent payment create reused existing row', {
             businessId: input.business_id,
             paymentNumber: input.payment_number,
@@ -317,6 +329,29 @@ export class PaymentService {
   }
 
   async refundPayment(input: RefundPaymentInput): Promise<Payment> {
+    const requestKey = input.idempotency_key?.trim() || null;
+    if (requestKey) {
+      const prior = await this.db.payments
+        .where('[business_id+idempotency_key]')
+        .equals([input.business_id, requestKey])
+        .first();
+      if (prior) {
+        if (prior.amount_paise >= 0 || !prior.reference.startsWith('refund of ')) {
+          log.warn('payment', 'refund rejected: idempotency key belongs to another payment', {
+            businessId: input.business_id,
+            idempotencyKey: requestKey,
+            paymentId: prior.id,
+          });
+          throw new PaymentValidationError('idempotency key is already used by another payment');
+        }
+        log.info('payment', 'idempotent refund reused existing row', {
+          businessId: input.business_id,
+          idempotencyKey: requestKey,
+          refundPaymentId: prior.id,
+        });
+        return prior;
+      }
+    }
     const original = await this.db.payments.get(input.payment_id);
     if (!original) {
       throw new PaymentValidationError(
@@ -389,6 +424,7 @@ export class PaymentService {
       reference: `refund of ${original.payment_number}`,
       notes: input.reason,
       allocations: refundAllocations,
+      idempotency_key: requestKey,
       journal_entry_id: refundJournalId,
       created_at: now,
       updated_at: now,
@@ -820,6 +856,20 @@ function previewAllocations(
     );
   }
   return out;
+}
+
+function samePaymentRequest(a: Payment, b: Payment): boolean {
+  return (
+    (a.idempotency_key ?? null) === (b.idempotency_key ?? null) &&
+    a.payment_date === b.payment_date &&
+    a.direction === b.direction &&
+    a.party_type === b.party_type &&
+    a.party_id === b.party_id &&
+    a.method === b.method &&
+    a.account_id === b.account_id &&
+    a.amount_paise === b.amount_paise &&
+    JSON.stringify(a.allocations) === JSON.stringify(b.allocations)
+  );
 }
 
 function validateCreateInput(input: CreatePaymentInput): void {

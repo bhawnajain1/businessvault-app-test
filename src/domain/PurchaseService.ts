@@ -796,6 +796,11 @@ export class PurchaseService {
     const purchase = await this.db.purchases.get(purchaseId);
     if (!purchase) throw new Error(`Purchase not found: ${purchaseId}`);
     if (purchase.status === 'cancelled') return purchase;
+    if (purchase.reversed_by_purchase_id) {
+      throw new Error(
+        'Cannot cancel a bill that already has a purchase return; cancel the debit note instead.',
+      );
+    }
     if (purchase.paid_paise > 0) {
       throw new Error('Cannot cancel a bill with payments applied; reverse or migrate the payments first.');
     }
