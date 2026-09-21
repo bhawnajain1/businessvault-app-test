@@ -109,7 +109,11 @@ export default function SuppliersPage() {
         }
       }
       for (const supplier of await db.suppliers.where('business_id').equals(businessId).toArray()) {
-        rollup(supplier.id).payable_paise += supplier.opening_balance_paise;
+        if (supplier.opening_balance_paise > 0) {
+          rollup(supplier.id).payable_paise += supplier.opening_balance_paise;
+        } else if (supplier.opening_balance_paise < 0) {
+          rollup(supplier.id).advance_paise += -supplier.opening_balance_paise;
+        }
       }
       if (!cancelled) setRollups(next);
     })();

@@ -270,11 +270,15 @@ export default function CustomerDetailPage() {
       0,
     );
     const totalPaid = nonCancelledOriginals.reduce((s, r) => s + r.paid_paise, 0);
-    const totalDue = nonCancelledOriginals.reduce(
+    const invoiceDue = nonCancelledOriginals.reduce(
       (s, r) => s + r.outstanding_paise,
       0,
     );
-    const advance = advances.reduce((s, a) => s + Math.max(0, a.remaining_paise), 0);
+    const openingBalance = customer?.opening_balance_paise ?? 0;
+    const totalDue = invoiceDue + Math.max(0, openingBalance);
+    const advance =
+      advances.reduce((s, a) => s + Math.max(0, a.remaining_paise), 0) +
+      Math.max(0, -openingBalance);
     const creditLimit = customer?.credit_limit_paise ?? 0;
     const availableCredit =
       creditLimit > 0 ? Math.max(0, creditLimit - totalDue) : null;

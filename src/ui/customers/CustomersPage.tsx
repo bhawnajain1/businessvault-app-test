@@ -189,7 +189,8 @@ export default function CustomersPage() {
       }
       for (const customer of customers) {
         const opening = customer.opening_balance_paise;
-        if (opening !== 0) bump(customer.id).receivable_paise += opening;
+        if (opening > 0) bump(customer.id).receivable_paise += opening;
+        if (opening < 0) bump(customer.id).advance_paise += -opening;
       }
       for (const [cid, ymd] of lastPaymentByCustomer.entries()) {
         bump(cid).last_payment_ymd = ymd;
