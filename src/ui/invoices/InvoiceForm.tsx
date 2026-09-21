@@ -5,7 +5,7 @@ import { db } from '../../db';
 import type { Business, Customer, Item } from '../../db/types';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import { InvoiceService, type CreateInvoiceLineInput } from '../../domain/InvoiceService';
-import { allocateInvoiceNumber } from '../../domain/invoiceNumbering';
+import { allocateInvoiceNumber, validateInvoiceNumber } from '../../domain/invoiceNumbering';
 import { PaymentService } from '../../domain/PaymentService';
 import { AdvanceService } from '../../domain/AdvanceService';
 import { bankersRound, isInterstate, roundOffToNearestRupee, splitTax } from '../../domain/gst';
@@ -282,6 +282,13 @@ export default function InvoiceForm() {
       setSaveError('Pick a customer.');
       return;
     }
+    if (!editingId && invoiceNumberOverride.trim()) {
+      const format = validateInvoiceNumber(invoiceNumberOverride);
+      if (!format.ok) {
+        setSaveError(format.error);
+        return;
+      }
+    }
     if (!customer) {
       setSaveError('Customer not found.');
       return;
@@ -513,6 +520,9 @@ export default function InvoiceForm() {
               }
             }}
             placeholder={`${business.invoice_prefix || 'INV'}-000123`}
+            aria-label="Invoice number"
+            pattern="[A-Za-z][A-Za-z0-9_/-]*[0-9]+"
+            title="Use letters/numbers and end with one or more digits, for example ss3 or INV-000123."
             className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </label>
@@ -930,7 +940,6 @@ export default function InvoiceForm() {
     </div>
   );
 }
-
 function PaymentInput({
   label,
   value,
@@ -981,4 +990,3 @@ function Row({ label, paise, strong }: { label: string; paise: number; strong?: 
     </div>
   );
 }
-
