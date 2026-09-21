@@ -1,7 +1,7 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { db } from '../../db';
-import type { Supplier } from '../../db/types';
+import type { Advance, Payment, Purchase, Supplier } from '../../db/types';
 import { createSupplierService } from '../../domain/SupplierService';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
@@ -16,6 +16,11 @@ import {
   type GstinStatePair,
 } from '../../lib/gstinStateSync';
 import GstinStateBadge from '../components/GstinStateBadge';
+
+interface SupplierRollup {
+  payable_paise: number;
+  advance_paise: number;
+}
 
 interface SupplierForm {
   name: string;
@@ -62,6 +67,56 @@ export default function SuppliersPage() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [rollups, setRollups] = useState<Map<string, SupplierRollup>>(new Map());
+
+  useEffect(() => {
+    if (!businessId) return;
+    let cancelled = false;
+    (async () => {
+      const [bills, payments, advances] = await Promise.all([
+        db.purchases.where('business_id').equals(businessId).toArray() as Promise<Purchase[]>,
+        db.payments.where('[business_id+direction]').equals([businessId, 'out']).toArray() as Promise<Payment[]>,
+        db.advances.where('business_id').equals(businessId).toArray() as Promise<Advance[]>,
+      ]);
+      const paidByBill = new Map<string, number>();
+      for (const payment of payments) {
+        if (payment.party_type !== 'supplier') continue;
+        for (const allocation of payment.allocations) {
+          if (allocation.bill_id) {
+            paidByBill.set(
+              allocation.bill_id,
+              (paidByBill.get(allocation.bill_id) ?? 0) + allocation.amount_paise,
+            );
+          }
+        }
+      }
+      const next = new Map<string, SupplierRollup>();
+      const rollup = (supplierId: string): SupplierRollup => {
+        const existing = next.get(supplierId);
+        if (existing) return existing;
+        const created = { payable_paise: 0, advance_paise: 0 };
+        next.set(supplierId, created);
+        return created;
+      };
+      for (const bill of bills) {
+        if (bill.status === 'cancelled' || bill.status === 'draft' || bill.reverses_purchase_id) continue;
+        const paid = paidByBill.get(bill.id) ?? bill.paid_paise;
+        rollup(bill.supplier_id).payable_paise += Math.max(0, bill.total_paise - paid);
+      }
+      for (const advance of advances) {
+        if (advance.party_type === 'supplier' && advance.remaining_paise > 0) {
+          rollup(advance.party_id).advance_paise += advance.remaining_paise;
+        }
+      }
+      for (const supplier of await db.suppliers.where('business_id').equals(businessId).toArray()) {
+        rollup(supplier.id).payable_paise += supplier.opening_balance_paise;
+      }
+      if (!cancelled) setRollups(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [businessId, reloadKey]);
 
   function pairFromForm(): GstinStatePair {
     return {
@@ -138,6 +193,18 @@ export default function SuppliersPage() {
     { key: 'email', header: 'Email', render: (r) => r.email || '—' },
     { key: 'gstin', header: 'GSTIN', filterable: true, render: (r) => r.gstin || '—' },
     { key: 'state', header: 'State', render: (r) => r.state || '—' },
+    {
+      key: 'payable',
+      header: 'Payable',
+      className: 'text-right',
+      render: (r) => <Money paise={rollups.get(r.id)?.payable_paise ?? r.opening_balance_paise} />,
+    },
+    {
+      key: 'advance',
+      header: 'Advance',
+      className: 'text-right',
+      render: (r) => <Money paise={rollups.get(r.id)?.advance_paise ?? 0} />,
+    },
     {
       key: 'opening_balance',
       header: 'Opening Balance',
