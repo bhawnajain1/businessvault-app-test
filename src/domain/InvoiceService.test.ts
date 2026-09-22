@@ -1442,6 +1442,7 @@ describe('InvoiceService — round-off modes (feedback §1)', () => {
 
 describe('InvoiceService — editable invoice number (feedback §3 §4)', () => {
   it('validateInvoiceNumber accepts compact and legacy numbers and rejects garbage', () => {
+    expect(validateInvoiceNumber('7652').ok).toBe(true);
     expect(validateInvoiceNumber('INV001').ok).toBe(true);
     expect(validateInvoiceNumber('TS002', 'TS').ok).toBe(true);
     expect(validateInvoiceNumber('INV-000123').ok).toBe(true);

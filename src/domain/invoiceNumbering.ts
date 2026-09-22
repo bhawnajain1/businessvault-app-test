@@ -17,6 +17,8 @@ import { log } from '../lib/log';
 // set. Any live (deleted_at == null) invoice keeps the number locked.
 
 const MAX_SCAN = 10_000;
+// Invoice numbers are user-facing labels. They may be numeric (7652),
+// prefixed numeric (INV-7652), or alphanumeric (SI7652).
 const NUMBER_PATTERN = /^([A-Za-z][A-Za-z0-9_\/\-]*?)(?:-)?(\d+)$/;
 
 function formatSequence(sequence: number, width: number): string {
@@ -117,13 +119,13 @@ export function validateInvoiceNumber(
     return { ok: false, error: 'Invoice number is too long (max 40 characters).' };
   }
   const parsed = parseInvoiceNumber(trimmed);
-  if (!parsed) {
+  if (!parsed && !/^\d+$/.test(trimmed)) {
     return {
       ok: false,
-      error: 'Invoice number must be "PREFIX<digits>" (e.g. INV001).',
+      error: 'Invoice number must be numeric or alphanumeric (e.g. 7652 or INV-7652).',
     };
   }
-  if (expectedPrefix && parsed.prefix !== expectedPrefix && parsed.prefix !== `${expectedPrefix}-`) {
+  if (expectedPrefix && parsed && parsed.prefix !== expectedPrefix && parsed.prefix !== `${expectedPrefix}-`) {
     return {
       ok: false,
       error: `Invoice number must start with the "${expectedPrefix}" series.`,
