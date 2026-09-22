@@ -1478,6 +1478,35 @@ describe('InvoiceService — editable invoice number (feedback §3 §4)', () => 
     expect(await allocateInvoiceNumber(db, businessId)).toBe('ss4');
   });
 
+  it('uses the newest invoice format when an older invoice has a different format', async () => {
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'ss-00023',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'ss3',
+      invoice_date: '2026-08-20',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('ss4');
+  });
+
   it('rejects duplicate manual invoice numbers with a clear error', async () => {
     const input = {
       business_id: businessId,

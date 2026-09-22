@@ -5,7 +5,11 @@ import { db } from '../../db';
 import type { Business, Customer, Item } from '../../db/types';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import { InvoiceService, type CreateInvoiceLineInput } from '../../domain/InvoiceService';
-import { allocateInvoiceNumber, validateInvoiceNumber } from '../../domain/invoiceNumbering';
+import {
+  allocateInvoiceNumber,
+  getNextAvailableInvoiceNumber,
+  validateInvoiceNumber,
+} from '../../domain/invoiceNumbering';
 import { PaymentService } from '../../domain/PaymentService';
 import { AdvanceService } from '../../domain/AdvanceService';
 import { bankersRound, isInterstate, roundOffToNearestRupee, splitTax } from '../../domain/gst';
@@ -72,6 +76,7 @@ export default function InvoiceForm() {
   });
   const [dueDate, setDueDate] = useState<string>('');
   const [invoiceNumberOverride, setInvoiceNumberOverride] = useState<string>('');
+  const [nextInvoiceNumber, setNextInvoiceNumber] = useState<string>('');
   const [notes, setNotes] = useState('');
   const [terms, setTerms] = useState('');
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
@@ -131,6 +136,21 @@ export default function InvoiceForm() {
       setDefaultWarehouseId(def?.id ?? '');
     })();
   }, [businessId]);
+
+  useEffect(() => {
+    if (!businessId || editingId) return;
+    let cancelled = false;
+    getNextAvailableInvoiceNumber(db, businessId)
+      .then((next) => {
+        if (!cancelled) setNextInvoiceNumber(next);
+      })
+      .catch(() => {
+        if (!cancelled) setNextInvoiceNumber('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [businessId, editingId]);
 
   // Hydrate from an existing invoice when editing
   useEffect(() => {
@@ -519,12 +539,18 @@ export default function InvoiceForm() {
                 setInvoiceNumberOverride(e.target.value);
               }
             }}
-            placeholder={`${business.invoice_prefix || 'INV'}-000123`}
+            placeholder={nextInvoiceNumber || `${business.invoice_prefix || 'INV'}001`}
+            aria-describedby="invoice-number-help"
             aria-label="Invoice number"
             pattern="[A-Za-z][A-Za-z0-9_/-]*[0-9]+"
             title="Use letters/numbers and end with one or more digits, for example ss3 or INV-000123."
             className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
           />
+          {!editingId && (
+            <span id="invoice-number-help" className="mt-1 text-[11px] text-fg-muted">
+              Leave blank to use the next number: {nextInvoiceNumber || 'loading...'}
+            </span>
+          )}
         </label>
         <div className="flex flex-col justify-end text-xs text-fg-muted">
           {customer && (
