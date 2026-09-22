@@ -45,6 +45,8 @@ export type InvoiceStatus =
   | 'paid'
   | 'cancelled';
 
+export type EInvoiceStatus = 'not_recorded' | 'local_unverified';
+
 export type PurchaseStatus =
   | 'draft'
   | 'received'
@@ -324,6 +326,12 @@ export interface Invoice {
   // after V2 upload. `null` when show_signature_on_invoice was off at
   // creation time or the business had no signature uploaded.
   signature_attachment_id?: string | null;
+  e_invoice_status?: EInvoiceStatus;
+  e_invoice_irn?: string | null;
+  e_invoice_ack_number?: string | null;
+  e_invoice_ack_date?: string | null;
+  e_invoice_qr_reference?: string | null;
+  e_invoice_note?: string | null;
   created_at: string;
   updated_at: string;
   entity_version: number;

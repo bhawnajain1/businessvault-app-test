@@ -199,6 +199,43 @@ beforeEach(async () => {
 });
 
 describe('InvoiceService.createInvoice', () => {
+  it('stores local e-invoice metadata without changing invoice totals', async () => {
+    const invoice = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-EINV-1',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    const before = invoice.total_paise;
+    const updated = await service.updateLocalEInvoiceMetadata({
+      invoiceId: invoice.id,
+      deviceId,
+      irn: 'local-irn-1',
+      ackNumber: 'local-ack-1',
+      ackDate: '2026-08-19',
+      note: 'Captured from portal for later verification',
+    });
+
+    expect(updated.total_paise).toBe(before);
+    expect(updated.e_invoice_status).toBe('local_unverified');
+    expect(updated.e_invoice_irn).toBe('local-irn-1');
+    expect((await db.invoices.get(invoice.id))?.e_invoice_ack_number).toBe('local-ack-1');
+    expect(
+      await db.sync_events.where('[business_id+entity_type+entity_id]').equals([
+        businessId,
+        'invoice',
+        invoice.id,
+      ]).count(),
+    ).toBe(2);
+  });
+
   it('runs all 6 steps atomically', async () => {
     const invoice = await service.createInvoice({
       business_id: businessId,

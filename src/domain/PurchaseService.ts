@@ -12,6 +12,7 @@ import { appendSyncEvent } from './syncEventLog';
 import { bankersRound, roundOffToNearestRupee } from './gst';
 import { reconcileAfter } from './reconciliation';
 import { log } from '../lib/log';
+import { validateHsnSac } from './compliance';
 
 export interface PurchaseServiceDeps {
   db: BusinessVaultDB;
@@ -102,6 +103,7 @@ export class PurchaseService {
     const computed: ComputedLine[] = [];
 
     input.lines.forEach((li, idx) => {
+      validateHsnSac(li.hsn, false, `Purchase line ${idx + 1}`);
       if (!Number.isInteger(li.qtyMicros) || li.qtyMicros <= 0) {
         throw new Error(`line[${idx}].qtyMicros must be positive integer`);
       }

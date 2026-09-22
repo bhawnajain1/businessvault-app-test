@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 11;
 
 export const DB_NAME = 'businessvault';
 
@@ -175,4 +175,8 @@ export const STORES_V10: Record<string, string> = {
   ...STORES_V9,
   payments:
     'id, business_id, [business_id+payment_number], [business_id+idempotency_key], [business_id+party_type+party_id], [business_id+payment_date], [business_id+direction], updated_at',
+};
+
+export const STORES_V11: Record<string, string> = {
+  ...STORES_V10,
 };

@@ -21,7 +21,10 @@ import {
   validateInvoiceNumber,
 } from './invoiceNumbering';
 import { log } from '../lib/log';
+import { validateHsnSac } from './compliance';
+import type { EInvoiceStatus } from '../db/types';
 import { reconcileAfter } from './reconciliation';
+import { appendSyncEvent } from './syncEventLog';
 
 // Thrown when restoreInvoice finds that the recycled invoice's number has
 // already been reused by a live invoice (§4). UI catches this and prompts the
@@ -119,6 +122,59 @@ export interface Pagination {
 
 export class InvoiceService {
   constructor(private readonly db: BusinessVaultDB = defaultDb) {}
+
+  async updateLocalEInvoiceMetadata(input: {
+    invoiceId: string;
+    deviceId: string;
+    irn?: string | null;
+    ackNumber?: string | null;
+    ackDate?: string | null;
+    qrReference?: string | null;
+    note?: string | null;
+  }): Promise<Invoice> {
+    const invoice = await this.db.invoices.get(input.invoiceId);
+    if (!invoice) throw new Error(`Invoice not found: ${input.invoiceId}`);
+    const now = new Date().toISOString();
+    const next: Invoice = {
+      ...invoice,
+      e_invoice_status: 'local_unverified' satisfies EInvoiceStatus,
+      e_invoice_irn: input.irn?.trim() || null,
+      e_invoice_ack_number: input.ackNumber?.trim() || null,
+      e_invoice_ack_date: input.ackDate?.trim() || null,
+      e_invoice_qr_reference: input.qrReference?.trim() || null,
+      e_invoice_note: input.note?.trim() || null,
+      updated_at: now,
+      entity_version: invoice.entity_version + 1,
+    };
+    await this.db.transaction('rw', [this.db.invoices, this.db.sync_events], async () => {
+      await this.db.invoices.put(next);
+      await appendSyncEvent(this.db, {
+        businessId: invoice.business_id,
+        deviceId: input.deviceId,
+        entityType: 'invoice',
+        entityId: invoice.id,
+        operation: 'updated',
+        payload: {
+          id: invoice.id,
+          e_invoice_status: next.e_invoice_status,
+          e_invoice_irn: next.e_invoice_irn,
+          e_invoice_ack_number: next.e_invoice_ack_number,
+          e_invoice_ack_date: next.e_invoice_ack_date,
+          e_invoice_qr_reference: next.e_invoice_qr_reference,
+          e_invoice_note: next.e_invoice_note,
+          entity_version: next.entity_version,
+        },
+        timestamp: now,
+      });
+    });
+    log.info('compliance', 'local e-invoice metadata updated', {
+      businessId: invoice.business_id,
+      invoiceId: invoice.id,
+      status: next.e_invoice_status,
+      hasIrn: Boolean(next.e_invoice_irn),
+    });
+    return next;
+  }
 
   async createInvoice(input: CreateInvoiceInput): Promise<Invoice> {
     if (input.lines.length === 0) {
@@ -236,6 +292,12 @@ export class InvoiceService {
       pdf_attachment_id: null,
       journal_entry_id: journalEntryId,
       signature_attachment_id: signatureAttachmentId,
+      e_invoice_status: 'not_recorded',
+      e_invoice_irn: null,
+      e_invoice_ack_number: null,
+      e_invoice_ack_date: null,
+      e_invoice_qr_reference: null,
+      e_invoice_note: null,
       created_at: now,
       updated_at: now,
       entity_version: 1,
@@ -398,6 +460,7 @@ export class InvoiceService {
         let totalCogsPaise = 0;
         for (const line of invoiceLines) {
           const item = await this.db.items.get(line.item_id);
+          validateHsnSac(line.hsn, item?.is_service === 1, `Invoice line ${line.line_no}`);
           if (!item) {
             throw new Error(`Item not found: ${line.item_id}`);
           }

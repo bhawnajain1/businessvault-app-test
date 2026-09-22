@@ -11,6 +11,7 @@ import {
   STORES_V8,
   STORES_V9,
   STORES_V10,
+  STORES_V11,
 } from './schema';
 import { ulid } from 'ulid';
 import { pokeSyncWorker } from '../sync/pokeChannel';
@@ -314,6 +315,22 @@ export class BusinessVaultDB extends Dexie {
         }) => {
           if (row.idempotency_key === undefined) row.idempotency_key = null;
         });
+      });
+
+    this.version(11)
+      .stores(STORES_V11)
+      .upgrade(async (tx) => {
+        let updated = 0;
+        await tx.table('invoices').toCollection().modify((row: Record<string, unknown>) => {
+          if (row.e_invoice_status === undefined) row.e_invoice_status = 'not_recorded';
+          if (row.e_invoice_irn === undefined) row.e_invoice_irn = null;
+          if (row.e_invoice_ack_number === undefined) row.e_invoice_ack_number = null;
+          if (row.e_invoice_ack_date === undefined) row.e_invoice_ack_date = null;
+          if (row.e_invoice_qr_reference === undefined) row.e_invoice_qr_reference = null;
+          if (row.e_invoice_note === undefined) row.e_invoice_note = null;
+          updated++;
+        });
+        void updated;
       });
 
     // After any sync_event insert commits, kick the sync worker so the write

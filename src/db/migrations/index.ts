@@ -305,6 +305,41 @@ const migration_v8_to_v9: Migration = {
   },
 };
 
+const migration_v9_to_v10: Migration = {
+  from: 9,
+  to: 10,
+  describe: 'v9 → v10: adds payment idempotency metadata',
+  apply(tables) {
+    return {
+      ...tables,
+      payments: (tables.payments ?? []).map((row) => ({
+        ...row,
+        idempotency_key: row.idempotency_key ?? null,
+      })),
+    };
+  },
+};
+
+const migration_v10_to_v11: Migration = {
+  from: 10,
+  to: 11,
+  describe: 'v10 → v11: adds local e-invoice metadata',
+  apply(tables) {
+    return {
+      ...tables,
+      invoices: (tables.invoices ?? []).map((row) => ({
+        ...row,
+        e_invoice_status: row.e_invoice_status ?? 'not_recorded',
+        e_invoice_irn: row.e_invoice_irn ?? null,
+        e_invoice_ack_number: row.e_invoice_ack_number ?? null,
+        e_invoice_ack_date: row.e_invoice_ack_date ?? null,
+        e_invoice_qr_reference: row.e_invoice_qr_reference ?? null,
+        e_invoice_note: row.e_invoice_note ?? null,
+      })),
+    };
+  },
+};
+
 export const MIGRATIONS: Migration[] = [
   migration_v0_to_v1,
   migration_v1_to_v2,
@@ -315,6 +350,8 @@ export const MIGRATIONS: Migration[] = [
   migration_v6_to_v7,
   migration_v7_to_v8,
   migration_v8_to_v9,
+  migration_v9_to_v10,
+  migration_v10_to_v11,
 ];
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;
