@@ -737,6 +737,11 @@ export class PurchaseService {
     if (original.status === 'cancelled') {
       throw new Error('Cannot edit a cancelled purchase');
     }
+    if (original.reversed_by_purchase_id) {
+      throw new Error(
+        'Cannot edit a bill that already has a purchase return; cancel the debit note first.',
+      );
+    }
     if (original.paid_paise > 0) {
       throw new Error('Cannot edit a bill with payments applied; reverse or migrate the payments first.');
     }

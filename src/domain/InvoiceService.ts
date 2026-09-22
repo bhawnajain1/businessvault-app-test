@@ -1366,6 +1366,33 @@ export class InvoiceService {
     if (original.reversed_by_invoice_id) {
       throw new Error('Cannot edit an already-superseded invoice');
     }
+    if (original.paid_paise > 0) {
+      throw new Error(
+        'Cannot edit an invoice with payments applied; reverse or migrate the payments first.',
+      );
+    }
+    const payments = await this.db.payments.where('business_id').equals(original.business_id).toArray();
+    if (
+      payments.some((payment) =>
+        !payment.deleted_at &&
+        payment.allocations.some((allocation) => allocation.invoice_id === invoiceId),
+      )
+    ) {
+      throw new Error(
+        'Cannot edit an invoice referenced by a payment; reverse or migrate the payment first.',
+      );
+    }
+    const advances = await this.db.advances.where('business_id').equals(original.business_id).toArray();
+    if (
+      advances.some((advance) =>
+        !advance.deleted_at &&
+        advance.applications.some((application) => application.invoice_id === invoiceId),
+      )
+    ) {
+      throw new Error(
+        'Cannot edit an invoice referenced by an advance; reverse or migrate the advance first.',
+      );
+    }
 
     // §3 invoice-number rename. Determine the target number for the reissue.
     // If the caller passed a new one, validate it and record the audit trail.

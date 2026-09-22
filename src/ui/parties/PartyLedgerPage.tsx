@@ -8,6 +8,7 @@ import type {
   PartyType,
   Payment,
   Purchase,
+  SalesReturn,
   Supplier,
 } from '../../db/types';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
@@ -78,9 +79,13 @@ export default function PartyLedgerPage() {
     (async () => {
       try {
         if (partyType === 'customer') {
-          const [cust, invs, pays, advs] = await Promise.all([
+          const [cust, invs, returns, pays, advs] = await Promise.all([
             db.customers.get(id),
             db.invoices
+              .where('[business_id+customer_id]')
+              .equals([businessId, id])
+              .toArray(),
+            db.sales_returns
               .where('[business_id+customer_id]')
               .equals([businessId, id])
               .toArray(),
@@ -97,7 +102,7 @@ export default function PartyLedgerPage() {
           ]);
           if (cancelled) return;
           setParty(cust ?? null);
-          setRows(buildCustomerRows(cust ?? null, invs, pays, advs));
+          setRows(buildCustomerRows(cust ?? null, invs, returns, pays, advs));
         } else {
           const [sup, bills, pays, advs] = await Promise.all([
             db.suppliers.get(id),
@@ -384,6 +389,7 @@ export default function PartyLedgerPage() {
 function buildCustomerRows(
   _cust: Customer | null,
   invs: Invoice[],
+  returns: SalesReturn[],
   pays: Payment[],
   advs: Advance[],
 ): LedgerRow[] {
@@ -392,7 +398,12 @@ function buildCustomerRows(
   const out: LedgerRow[] = [];
 
   for (const inv of invs) {
-    if (inv.status === 'cancelled' || inv.status === 'draft') continue;
+    if (
+      inv.status === 'cancelled' ||
+      inv.status === 'draft' ||
+      inv.deleted_at ||
+      inv.reversed_by_invoice_id
+    ) continue;
     if (inv.reverses_invoice_id) {
       // credit note — inv.total_paise is negative; flip to positive credit.
       out.push({
@@ -415,7 +426,20 @@ function buildCustomerRows(
     }
   }
 
+  for (const sr of returns) {
+    if (sr.status !== 'posted' || sr.deleted_at || sr.apply_to_balance_paise <= 0) continue;
+    out.push({
+      date: sr.return_date,
+      ref: sr.return_number,
+      kind: 'sales_return_credit',
+      description: `Sales return credit (applied to invoice ${sr.original_invoice_id})`,
+      debit_paise: 0,
+      credit_paise: sr.apply_to_balance_paise,
+    });
+  }
+
   for (const pay of pays) {
+    if (pay.deleted_at) continue;
     out.push({
       date: pay.payment_date,
       ref: pay.payment_number,
@@ -427,6 +451,7 @@ function buildCustomerRows(
   }
 
   for (const adv of advs) {
+    if (adv.deleted_at || adv.remaining_paise <= 0) continue;
     const isReturnCredit = adv.reference?.startsWith('sales_return:') ?? false;
     out.push({
       date: adv.advance_date,
@@ -436,7 +461,7 @@ function buildCustomerRows(
         ? `Sales return credit${adv.reference ? ` · ${adv.reference}` : ''}`
         : `Advance received (${adv.method})${adv.reference ? ` · ${adv.reference}` : ''}`,
       debit_paise: 0,
-      credit_paise: adv.amount_paise,
+      credit_paise: adv.remaining_paise,
     });
     // Advance applications don't move the combined AR+advance balance — the
     // invoice's own debit already nets against this credit. Emitting an
@@ -481,6 +506,7 @@ function buildSupplierRows(
   }
 
   for (const pay of pays) {
+    if (pay.deleted_at) continue;
     out.push({
       date: pay.payment_date,
       ref: pay.payment_number,
@@ -492,13 +518,14 @@ function buildSupplierRows(
   }
 
   for (const adv of advs) {
+    if (adv.deleted_at || adv.remaining_paise <= 0) continue;
     out.push({
       date: adv.advance_date,
       ref: adv.advance_number,
       kind: 'advance',
       description: `Advance paid (${adv.method})${adv.reference ? ` · ${adv.reference}` : ''}`,
       debit_paise: 0,
-      credit_paise: adv.amount_paise,
+      credit_paise: adv.remaining_paise,
     });
     // Advance applications don't move the combined AP+advance balance — the
     // bill's own debit already nets against this credit. Emitting an "applied"

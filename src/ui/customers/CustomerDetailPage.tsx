@@ -9,6 +9,7 @@ import type {
   Invoice,
   Payment,
   PaymentMethod,
+  SalesReturn,
 } from '../../db/types';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import { PaymentService } from '../../domain/PaymentService';
@@ -85,12 +86,18 @@ interface StatementRow {
 
 function buildStatement(
   invoices: Invoice[],
+  salesReturns: SalesReturn[],
   payments: Payment[],
   advances: Advance[],
 ): StatementRow[] {
   const out: StatementRow[] = [];
   for (const inv of invoices) {
-    if (inv.status === 'cancelled' || inv.status === 'draft') continue;
+    if (
+      inv.status === 'cancelled' ||
+      inv.status === 'draft' ||
+      inv.deleted_at ||
+      inv.reversed_by_invoice_id
+    ) continue;
     if (inv.reverses_invoice_id) {
       out.push({
         date: inv.invoice_date,
@@ -107,7 +114,17 @@ function buildStatement(
       });
     }
   }
+  for (const sr of salesReturns) {
+    if (sr.status !== 'posted' || sr.deleted_at || sr.apply_to_balance_paise <= 0) continue;
+    out.push({
+      date: sr.return_date,
+      transaction: `Sales return ${sr.return_number}`,
+      debit_paise: 0,
+      credit_paise: sr.apply_to_balance_paise,
+    });
+  }
   for (const pay of payments) {
+    if (pay.deleted_at) continue;
     out.push({
       date: pay.payment_date,
       transaction: `Payment ${pay.payment_number}${pay.method ? ` (${pay.method})` : ''}`,
@@ -116,11 +133,12 @@ function buildStatement(
     });
   }
   for (const adv of advances) {
+    if (adv.deleted_at || adv.remaining_paise <= 0) continue;
     out.push({
       date: adv.advance_date,
       transaction: `Advance ${adv.advance_number}`,
       debit_paise: 0,
-      credit_paise: adv.amount_paise,
+      credit_paise: adv.remaining_paise,
     });
     // Advance applications don't move the combined AR+advance balance — they
     // convert prepayment (a credit already booked at adv.advance_date) into
@@ -139,6 +157,7 @@ export default function CustomerDetailPage() {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [advances, setAdvances] = useState<Advance[]>([]);
+  const [salesReturns, setSalesReturns] = useState<SalesReturn[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -166,7 +185,7 @@ export default function CustomerDetailPage() {
     setError(null);
     (async () => {
       try {
-        const [cust, invs, pays, advs, accs] = await Promise.all([
+        const [cust, invs, pays, advs, returns, accs] = await Promise.all([
           db.customers.get(id),
           db.invoices
             .where('[business_id+customer_id]')
@@ -181,6 +200,10 @@ export default function CustomerDetailPage() {
             .where('business_id')
             .equals(businessId)
             .filter((a) => a.party_type === 'customer' && a.party_id === id)
+            .toArray(),
+          db.sales_returns
+            .where('[business_id+customer_id]')
+            .equals([businessId, id])
             .toArray(),
           db.accounts.where('business_id').equals(businessId).toArray(),
         ]);
@@ -203,6 +226,7 @@ export default function CustomerDetailPage() {
           }),
         );
         setAdvances(advs);
+        setSalesReturns(returns);
         setAccounts(accs);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -220,7 +244,11 @@ export default function CustomerDetailPage() {
   // Split originals from credit notes and index by reverses_invoice_id.
   const { originals, creditsByOriginalId } = useMemo(() => {
     const originals = invoices.filter(
-      (i) => !i.reverses_invoice_id && i.status !== 'draft',
+      (i) =>
+        !i.reverses_invoice_id &&
+        i.status !== 'draft' &&
+        !i.deleted_at &&
+        !i.reversed_by_invoice_id,
     );
     const creditsByOriginalId = new Map<string, Invoice[]>();
     for (const cn of invoices) {
@@ -286,13 +314,13 @@ export default function CustomerDetailPage() {
   }, [invoiceRows, advances, customer]);
 
   const statementRows = useMemo(() => {
-    const rows = buildStatement(invoices, payments, advances);
+    const rows = buildStatement(invoices, salesReturns, payments, advances);
     let bal = customer?.opening_balance_paise ?? 0;
     return rows.map((r) => {
       bal += r.debit_paise - r.credit_paise;
       return { ...r, balance_paise: bal };
     });
-  }, [invoices, payments, advances, customer]);
+  }, [invoices, salesReturns, payments, advances, customer]);
 
   const svc = useMemo(() => new PaymentService(), []);
 
