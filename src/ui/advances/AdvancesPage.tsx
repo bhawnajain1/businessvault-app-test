@@ -15,6 +15,7 @@ import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
 import { AdvanceService } from '../../domain/AdvanceService';
+import { isActivePurchase } from '../../domain/partyLedger';
 
 const METHODS: PaymentMethod[] = ['cash', 'card', 'upi', 'bank', 'cheque'];
 
@@ -156,7 +157,7 @@ export default function AdvancesPage() {
         .toArray();
       setApplyRows(
         bills
-          .filter((b) => b.balance_paise > 0 && b.status !== 'cancelled')
+          .filter((b) => b.balance_paise > 0 && isActivePurchase(b))
           .sort((a, b) => (a.bill_date < b.bill_date ? -1 : 1))
           .map((b: Purchase) => ({
             id: b.id,

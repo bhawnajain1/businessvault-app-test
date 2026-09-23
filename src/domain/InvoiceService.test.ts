@@ -199,6 +199,43 @@ beforeEach(async () => {
 });
 
 describe('InvoiceService.createInvoice', () => {
+  it('stores local e-invoice metadata without changing invoice totals', async () => {
+    const invoice = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-EINV-1',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    const before = invoice.total_paise;
+    const updated = await service.updateLocalEInvoiceMetadata({
+      invoiceId: invoice.id,
+      deviceId,
+      irn: 'local-irn-1',
+      ackNumber: 'local-ack-1',
+      ackDate: '2026-08-19',
+      note: 'Captured from portal for later verification',
+    });
+
+    expect(updated.total_paise).toBe(before);
+    expect(updated.e_invoice_status).toBe('local_unverified');
+    expect(updated.e_invoice_irn).toBe('local-irn-1');
+    expect((await db.invoices.get(invoice.id))?.e_invoice_ack_number).toBe('local-ack-1');
+    expect(
+      await db.sync_events.where('[business_id+entity_type+entity_id]').equals([
+        businessId,
+        'invoice',
+        invoice.id,
+      ]).count(),
+    ).toBe(2);
+  });
+
   it('runs all 6 steps atomically', async () => {
     const invoice = await service.createInvoice({
       business_id: businessId,
@@ -1404,7 +1441,10 @@ describe('InvoiceService — round-off modes (feedback §1)', () => {
 });
 
 describe('InvoiceService — editable invoice number (feedback §3 §4)', () => {
-  it('validateInvoiceNumber accepts well-formed numbers and rejects garbage', () => {
+  it('validateInvoiceNumber accepts compact and legacy numbers and rejects garbage', () => {
+    expect(validateInvoiceNumber('7652').ok).toBe(true);
+    expect(validateInvoiceNumber('INV001').ok).toBe(true);
+    expect(validateInvoiceNumber('TS002', 'TS').ok).toBe(true);
     expect(validateInvoiceNumber('INV-000123').ok).toBe(true);
     expect(validateInvoiceNumber('INV-000123', 'INV').ok).toBe(true);
     const wrongPrefix = validateInvoiceNumber('INV-000123', 'SI');
@@ -1412,8 +1452,149 @@ describe('InvoiceService — editable invoice number (feedback §3 §4)', () => 
     expect(validateInvoiceNumber('').ok).toBe(false);
     expect(validateInvoiceNumber('   ').ok).toBe(false);
     expect(validateInvoiceNumber('nonumber').ok).toBe(false);
+    expect(validateInvoiceNumber('ss').ok).toBe(false);
+    expect(validateInvoiceNumber('ss-').ok).toBe(false);
     expect(validateInvoiceNumber('INV-').ok).toBe(false);
     expect(validateInvoiceNumber('a'.repeat(50)).ok).toBe(false);
+  });
+
+  it('advances the business series after a manually numbered invoice', async () => {
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'TS002',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    expect((await db.businesses.get(businessId))?.invoice_prefix).toBe('TS');
+    expect((await db.businesses.get(businessId))?.invoice_next_seq).toBe(3);
+    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('TS003');
+  });
+
+  it('switches to the numeric series after a manually entered numeric invoice', async () => {
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'AB13',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: '123',
+      invoice_date: '2026-08-20',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    expect((await db.businesses.get(businessId))?.invoice_prefix).toBe('');
+    expect((await db.businesses.get(businessId))?.invoice_next_seq).toBe(124);
+    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('124');
+    expect(await allocateInvoiceNumber(db, businessId)).toBe('124');
+  });
+
+  it('continues a manually entered hyphenated series exactly', async () => {
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'bill-26',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    const business = await db.businesses.get(businessId);
+    expect(business?.invoice_prefix).toBe('bill-');
+    expect(business?.invoice_next_seq).toBe(27);
+    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('bill-27');
+    expect(await allocateInvoiceNumber(db, businessId)).toBe('bill-27');
+  });
+
+  it('continues a compact alphanumeric series with the same digit width', async () => {
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'ss3',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('ss4');
+    expect(await allocateInvoiceNumber(db, businessId)).toBe('ss4');
+  });
+
+  it('uses the newest invoice format when an older invoice has a different format', async () => {
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'ss-00023',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'ss3',
+      invoice_date: '2026-08-20',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('ss4');
+  });
+
+  it('rejects duplicate manual invoice numbers with a clear error', async () => {
+    const input = {
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'TS002',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    };
+    await service.createInvoice(input);
+
+    await expect(service.createInvoice(input)).rejects.toThrow(
+      'Invoice number "TS002" already exists and is already in use by this business',
+    );
   });
 
   it('isInvoiceNumberAvailable ignores recycled and superseded rows', async () => {
@@ -1438,7 +1619,7 @@ describe('InvoiceService — editable invoice number (feedback §3 §4)', () => 
     expect(await isInvoiceNumberAvailable(db, businessId, 'INV-000001')).toBe(true);
   });
 
-  it('getNextAvailableInvoiceNumber reuses the lowest recycled gap before the counter', async () => {
+  it('continues from the latest invoice instead of reusing a recycled gap', async () => {
     const inv1 = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -1470,12 +1651,12 @@ describe('InvoiceService — editable invoice number (feedback §3 §4)', () => 
     // No gaps yet — next auto should be INV-000003.
     expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('INV-000003');
 
-    // Recycle INV-000001; that number should now be the lowest gap.
+    // Recycling an older invoice does not change the latest invoice pattern.
     await service.deleteInvoice(inv1.id, 'testing');
-    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('INV-000001');
+    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('INV-000003');
   });
 
-  it('allocateInvoiceNumber consumes the recycled gap without bumping the counter', async () => {
+  it('allocates after the latest invoice instead of reusing a recycled gap', async () => {
     const inv1 = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -1504,10 +1685,9 @@ describe('InvoiceService — editable invoice number (feedback §3 §4)', () => 
     await service.deleteInvoice(inv1.id, 'testing');
 
     const next = await allocateInvoiceNumber(db, businessId);
-    expect(next).toBe('INV-000001');
-    // Counter untouched — gap was below invoice_next_seq.
+    expect(next).toBe('INV-000003');
     const biz = await db.businesses.get(businessId);
-    expect(biz?.invoice_next_seq).toBe(3);
+    expect(biz?.invoice_next_seq).toBe(4);
   });
 
   it('editing an invoice with a new number: renames the reissue and writes an audit_log row', async () => {

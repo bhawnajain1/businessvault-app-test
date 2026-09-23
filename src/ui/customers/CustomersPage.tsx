@@ -107,7 +107,7 @@ export default function CustomersPage() {
     let cancelled = false;
     (async () => {
       const today = new Date().toISOString().slice(0, 10);
-      const [invs, pays, advs] = await Promise.all([
+      const [invs, pays, advs, customers] = await Promise.all([
         db.invoices.where('business_id').equals(businessId).toArray(),
         db.payments
           .where('[business_id+direction]')
@@ -118,6 +118,7 @@ export default function CustomersPage() {
           .equals(businessId)
           .filter((a) => a.party_type === 'customer')
           .toArray(),
+        db.customers.where('business_id').equals(businessId).toArray() as Promise<Customer[]>,
       ]);
       if (cancelled) return;
 
@@ -177,7 +178,7 @@ export default function CustomersPage() {
         );
         const gross = inv.total_paise - paid - credit;
         const outstanding = Math.max(0, gross);
-        r.receivable_paise += outstanding;
+         r.receivable_paise += outstanding;
         if (outstanding > 0 && inv.due_date && today > inv.due_date) {
           r.overdue_paise += outstanding;
         }
@@ -185,6 +186,11 @@ export default function CustomersPage() {
       for (const adv of advs) {
         if (adv.remaining_paise <= 0) continue;
         bump(adv.party_id).advance_paise += adv.remaining_paise;
+      }
+      for (const customer of customers) {
+        const opening = customer.opening_balance_paise;
+        if (opening > 0) bump(customer.id).receivable_paise += opening;
+        if (opening < 0) bump(customer.id).advance_paise += -opening;
       }
       for (const [cid, ymd] of lastPaymentByCustomer.entries()) {
         bump(cid).last_payment_ymd = ymd;

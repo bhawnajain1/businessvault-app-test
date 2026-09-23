@@ -4,7 +4,7 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
-## 1.0.10 — 2026-09-23
+## 1.0.23 — 2026-09-23
 
 ### Changed
 

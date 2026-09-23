@@ -11,6 +11,8 @@ import type {
 import { appendSyncEvent } from './syncEventLog';
 import { bankersRound, roundOffToNearestRupee } from './gst';
 import { reconcileAfter } from './reconciliation';
+import { log } from '../lib/log';
+import { validateHsnSac } from './compliance';
 
 export interface PurchaseServiceDeps {
   db: BusinessVaultDB;
@@ -101,6 +103,7 @@ export class PurchaseService {
     const computed: ComputedLine[] = [];
 
     input.lines.forEach((li, idx) => {
+      validateHsnSac(li.hsn, false, `Purchase line ${idx + 1}`);
       if (!Number.isInteger(li.qtyMicros) || li.qtyMicros <= 0) {
         throw new Error(`line[${idx}].qtyMicros must be positive integer`);
       }
@@ -215,6 +218,11 @@ export class PurchaseService {
       status: 'received',
       reversed_by_purchase_id: null,
       reverses_purchase_id: null,
+      replaces_purchase_id: null,
+      replaced_by_purchase_id: null,
+      reversal_journal_entry_id: null,
+      cancelled_at: null,
+      cancel_reason: null,
       notes: input.notes ?? '',
       attachment_id: input.attachmentId ?? null,
       journal_entry_id: journalId,
@@ -554,8 +562,9 @@ export class PurchaseService {
       .equals(original.journal_entry_id)
       .toArray();
     const originalMovements = await this.db.stock_movements
-      .where('ref_id')
-      .equals(purchaseId)
+      .where('business_id')
+      .equals(original.business_id)
+      .filter((movement) => movement.ref_id === purchaseId)
       .toArray();
 
     const reversalLines: JournalLine[] = originalJournalLines.map((l, idx) => ({
@@ -631,6 +640,10 @@ export class PurchaseService {
 
         await db.journal_entries.add(reversalJournal);
         for (const l of reversalLines) await db.journal_lines.add(l);
+        await db.journal_entries.update(original.journal_entry_id, {
+          reversed_by_id: reversalJournalId,
+          updated_at: now,
+        });
 
         // Rename the old bill_number so a re-create can reuse the number.
         // Append -REV-<ulid-suffix> to guarantee uniqueness. Append the reason
@@ -641,10 +654,20 @@ export class PurchaseService {
           bill_number: reversedBillNumber,
           status: 'cancelled',
           notes: `${original.notes ? original.notes + '\n' : ''}[REVERSED ${now}] ${reason}`,
+          reversal_journal_entry_id: reversalJournalId,
+          cancelled_at: now,
+          cancel_reason: reason,
           updated_at: now,
           entity_version: original.entity_version + 1,
         };
         await db.purchases.put(reversed);
+        log.info('purchase.reversed', 'purchase posting reversed', {
+          businessId: original.business_id,
+          purchaseId: original.id,
+          reason,
+          reversalJournalId,
+          totalPaise: original.total_paise,
+        });
 
         await appendSyncEvent(db, {
           businessId: original.business_id,
@@ -714,14 +737,89 @@ export class PurchaseService {
     if (original.status === 'cancelled') {
       throw new Error('Cannot edit a cancelled purchase');
     }
-    await this.reversePurchasePosting(purchaseId, input.deviceId, 'edit');
+    if (original.reversed_by_purchase_id) {
+      throw new Error(
+        'Cannot edit a bill that already has a purchase return; cancel the debit note first.',
+      );
+    }
+    if (original.paid_paise > 0) {
+      throw new Error('Cannot edit a bill with payments applied; reverse or migrate the payments first.');
+    }
+    const payments = await this.db.payments.where('business_id').equals(original.business_id).toArray();
+    if (payments.some((payment) => payment.allocations.some((allocation) => allocation.bill_id === purchaseId))) {
+      throw new Error('Cannot edit a bill referenced by a payment; reverse or migrate the payment first.');
+    }
+    const reversed = await this.reversePurchasePosting(purchaseId, input.deviceId, 'edit');
     const reissued = await this.create(input);
+    const now = this.now();
+    await this.db.transaction('rw', [this.db.purchases, this.db.sync_events], async () => {
+      const original = await this.db.purchases.get(purchaseId);
+      const replacement = await this.db.purchases.get(reissued.id);
+      if (!original || !replacement) throw new Error('Purchase replacement rows missing');
+      await this.db.purchases.put({
+        ...original,
+        replaced_by_purchase_id: replacement.id,
+        updated_at: now,
+        entity_version: original.entity_version + 1,
+      });
+      await this.db.purchases.put({
+        ...replacement,
+        replaces_purchase_id: original.id,
+        updated_at: now,
+        entity_version: replacement.entity_version + 1,
+      });
+      await appendSyncEvent(this.db, {
+        businessId: original.business_id,
+        deviceId: input.deviceId,
+        entityType: 'purchase',
+        entityId: original.id,
+        operation: 'updated',
+        payload: {
+          purchase_id: original.id,
+          replaced_by_purchase_id: replacement.id,
+          reversal_journal_entry_id: reversed.reversal_journal_entry_id,
+        },
+        timestamp: now,
+      });
+      await appendSyncEvent(this.db, {
+        businessId: original.business_id,
+        deviceId: input.deviceId,
+        entityType: 'purchase',
+        entityId: replacement.id,
+        operation: 'updated',
+        payload: { purchase_id: replacement.id, replaces_purchase_id: original.id },
+        timestamp: now,
+      });
+    });
     // §17: reverse + reissue is a two-JE dance; verify TB net effect
     // equals the new bill and inventory identity holds.
     await reconcileAfter(original.business_id, 'purchase.recycle', {
       db: this.db,
     });
-    return reissued;
+    return (await this.db.purchases.get(reissued.id)) ?? reissued;
+  }
+
+  async cancel(purchaseId: string, deviceId: string, reason = 'cancelled by user'): Promise<Purchase> {
+    const purchase = await this.db.purchases.get(purchaseId);
+    if (!purchase) throw new Error(`Purchase not found: ${purchaseId}`);
+    if (purchase.status === 'cancelled') return purchase;
+    if (purchase.reversed_by_purchase_id) {
+      throw new Error(
+        'Cannot cancel a bill that already has a purchase return; cancel the debit note instead.',
+      );
+    }
+    if (purchase.paid_paise > 0) {
+      throw new Error('Cannot cancel a bill with payments applied; reverse or migrate the payments first.');
+    }
+    const payments = await this.db.payments.where('business_id').equals(purchase.business_id).toArray();
+    if (payments.some((payment) => payment.allocations.some((allocation) => allocation.bill_id === purchaseId))) {
+      throw new Error('Cannot cancel a bill referenced by a payment.');
+    }
+    return this.reversePurchasePosting(purchaseId, deviceId, reason);
+  }
+
+  async delete(purchaseId: string, deviceId: string): Promise<Purchase> {
+    return this.cancel(purchaseId, deviceId, 'deleted by user');
   }
 
   async get(id: string): Promise<Purchase | undefined> {

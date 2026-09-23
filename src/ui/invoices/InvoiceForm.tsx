@@ -5,7 +5,11 @@ import { db } from '../../db';
 import type { Business, Customer, Item } from '../../db/types';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import { InvoiceService, type CreateInvoiceLineInput } from '../../domain/InvoiceService';
-import { allocateInvoiceNumber } from '../../domain/invoiceNumbering';
+import {
+  allocateInvoiceNumber,
+  getNextAvailableInvoiceNumber,
+  validateInvoiceNumber,
+} from '../../domain/invoiceNumbering';
 import { PaymentService } from '../../domain/PaymentService';
 import { AdvanceService } from '../../domain/AdvanceService';
 import { bankersRound, isInterstate, roundOffToNearestRupee, splitTax } from '../../domain/gst';
@@ -72,6 +76,7 @@ export default function InvoiceForm() {
   });
   const [dueDate, setDueDate] = useState<string>('');
   const [invoiceNumberOverride, setInvoiceNumberOverride] = useState<string>('');
+  const [nextInvoiceNumber, setNextInvoiceNumber] = useState<string>('');
   const [notes, setNotes] = useState('');
   const [terms, setTerms] = useState('');
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
@@ -131,6 +136,21 @@ export default function InvoiceForm() {
       setDefaultWarehouseId(def?.id ?? '');
     })();
   }, [businessId]);
+
+  useEffect(() => {
+    if (!businessId || editingId) return;
+    let cancelled = false;
+    getNextAvailableInvoiceNumber(db, businessId)
+      .then((next) => {
+        if (!cancelled) setNextInvoiceNumber(next);
+      })
+      .catch(() => {
+        if (!cancelled) setNextInvoiceNumber('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [businessId, editingId]);
 
   // Hydrate from an existing invoice when editing
   useEffect(() => {
@@ -282,6 +302,13 @@ export default function InvoiceForm() {
       setSaveError('Pick a customer.');
       return;
     }
+    if (!editingId && invoiceNumberOverride.trim()) {
+      const format = validateInvoiceNumber(invoiceNumberOverride);
+      if (!format.ok) {
+        setSaveError(format.error);
+        return;
+      }
+    }
     if (!customer) {
       setSaveError('Customer not found.');
       return;
@@ -349,24 +376,6 @@ export default function InvoiceForm() {
           invoice_number: invoiceNumber,
         });
 
-        const cashPaise = toPaise(payments.cashStr);
-        const cardPaise = toPaise(payments.cardStr);
-        const upiPaise = toPaise(payments.upiStr);
-        if (cashPaise > 0 || cardPaise > 0 || upiPaise > 0) {
-          await paymentSvc.postInvoicePayments({
-            business_id: businessId,
-            device_id: deviceId,
-            invoice_id: saved.id,
-            payment_date: invoiceDate,
-            split: {
-              cash_paise: cashPaise,
-              card_paise: cardPaise,
-              upi_paise: upiPaise,
-              credit_paise: toPaise(payments.creditStr),
-            },
-          });
-        }
-
         // Apply any selected advances (customer only, new invoice only).
         for (const [advId, str] of Object.entries(advanceAllocations)) {
           const paise = Math.round(Number(str) * 100);
@@ -380,6 +389,26 @@ export default function InvoiceForm() {
             applied_on: invoiceDate,
           });
         }
+      }
+
+      // Payments apply to the newly created invoice on both create and edit.
+      // updateInvoice reissues the invoice, so post after it returns.
+      const cashPaise = toPaise(payments.cashStr);
+      const cardPaise = toPaise(payments.cardStr);
+      const upiPaise = toPaise(payments.upiStr);
+      if (cashPaise > 0 || cardPaise > 0 || upiPaise > 0) {
+        await paymentSvc.postInvoicePayments({
+          business_id: businessId,
+          device_id: deviceId,
+          invoice_id: saved.id,
+          payment_date: invoiceDate,
+          split: {
+            cash_paise: cashPaise,
+            card_paise: cardPaise,
+            upi_paise: upiPaise,
+            credit_paise: toPaise(payments.creditStr),
+          },
+        });
       }
       if (opts?.thenPrint) {
         navigate(`/invoices/${saved.id}/print`);
@@ -512,9 +541,18 @@ export default function InvoiceForm() {
                 setInvoiceNumberOverride(e.target.value);
               }
             }}
-            placeholder={`${business.invoice_prefix || 'INV'}-000123`}
+            placeholder={nextInvoiceNumber || `${business.invoice_prefix ?? 'INV'}001`}
+            aria-describedby="invoice-number-help"
+            aria-label="Invoice number"
+            pattern="[A-Za-z][A-Za-z0-9_/-]*[0-9]+"
+            title="Use letters/numbers and end with one or more digits, for example ss3 or INV-000123."
             className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
           />
+          {!editingId && (
+            <span id="invoice-number-help" className="mt-1 text-[11px] text-fg-muted">
+              Leave blank to use the next number: {nextInvoiceNumber || 'loading...'}
+            </span>
+          )}
         </label>
         <div className="flex flex-col justify-end text-xs text-fg-muted">
           {customer && (
@@ -930,7 +968,6 @@ export default function InvoiceForm() {
     </div>
   );
 }
-
 function PaymentInput({
   label,
   value,
@@ -981,4 +1018,3 @@ function Row({ label, paise, strong }: { label: string; paise: number; strong?: 
     </div>
   );
 }
-

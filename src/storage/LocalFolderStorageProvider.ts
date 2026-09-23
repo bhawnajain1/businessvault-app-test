@@ -43,6 +43,7 @@ import type {
   WriteJournalResult,
   WriteSnapshotInput,
 } from './CustomerStorageProvider';
+import { canonicalJson, GENESIS_HASH, sha256Hex as sha256Event } from '../journal/event';
 
 // ---------------------------------------------------------------------------
 // Tiny FS abstraction — one implementation over FileSystemDirectoryHandle,
@@ -1026,9 +1027,10 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
       }
     }
 
-    // Verify journal files parse line-by-line.
+    // Verify journal files parse line-by-line and preserve the payload/hash chain.
     const journalRoot = `${business.folderPath}/journal`;
     if (await fs.exists(journalRoot)) {
+      const allJournalEvents: SyncEvent[] = [];
       const years = await fs.list(journalRoot);
       for (const y of years) {
         if (y.kind !== 'directory') continue;
@@ -1038,11 +1040,19 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
           filesChecked++;
           const text = await fs.readFileText(`${journalRoot}/${y.name}/${m.name}`);
           let lineNo = 0;
+          const seenEventIds = new Set<string>();
+          const parsedEvents: SyncEvent[] = [];
           for (const line of text.split('\n')) {
             lineNo++;
             if (!line) continue;
             try {
-              JSON.parse(line);
+              const event = JSON.parse(line) as SyncEvent;
+              parsedEvents.push(event);
+              allJournalEvents.push(event);
+              if (seenEventIds.has(event.event_id)) {
+                issues.push({ severity: 'error', code: 'DUPLICATE_JOURNAL_EVENT', path: `journal/${y.name}/${m.name}:${lineNo}`, detail: event.event_id });
+              }
+              seenEventIds.add(event.event_id);
             } catch (err) {
               issues.push({
                 severity: 'error',
@@ -1052,6 +1062,28 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
               });
             }
           }
+          const hasCryptoHashes = parsedEvents.length > 0 && parsedEvents.every(
+            (event) => /^[0-9a-f]{64}$/.test(event.payload_hash),
+          );
+          if (hasCryptoHashes) {
+            for (const event of parsedEvents) {
+              const payloadHash = await sha256Event(canonicalJson(event.payload));
+              if (event.payload_hash !== payloadHash) {
+                issues.push({ severity: 'error', code: 'PAYLOAD_HASH_MISMATCH', path: `journal/${y.name}/${m.name}`, detail: `expected ${payloadHash}, got ${event.payload_hash}` });
+              }
+            }
+          }
+        }
+      }
+      const payloadHashes = new Set(allJournalEvents.map((event) => event.payload_hash));
+      for (const event of allJournalEvents) {
+        if (event.previous_hash !== null && event.previous_hash !== GENESIS_HASH && !payloadHashes.has(event.previous_hash)) {
+          issues.push({
+            severity: 'error',
+            code: 'BROKEN_JOURNAL_CHAIN',
+            path: `journal/event:${event.event_id}`,
+            detail: `previous hash ${event.previous_hash} is not present in the journal`,
+          });
         }
       }
     }

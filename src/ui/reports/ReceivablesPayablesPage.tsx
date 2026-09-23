@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { db } from '../../db';
 import type { Advance, Customer, Invoice, Purchase, Supplier } from '../../db/types';
 import { money } from './reportUtils';
 import { useBusinessId } from './useBusinessId';
+import { useLiveQuery } from '../hooks/useLiveQuery';
+import { log } from '../../lib/log';
 import {
   computePayables,
   computeReceivables,
@@ -34,18 +36,9 @@ function todayYmd(): string {
 
 export default function ReceivablesPayablesPage() {
   const { businessId, error: bizError } = useBusinessId();
-  const [data, setData] = useState<Loaded | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!businessId) return;
-    let alive = true;
-    setLoading(true);
-    setErr(null);
-    (async () => {
-      try {
-        const [invoices, customers, bills, suppliers, advances] = await Promise.all([
+  const data = useLiveQuery<Loaded | null>(async () => {
+    if (!businessId) return null;
+        const [invoices, customers, bills, suppliers, advances, salesReturns] = await Promise.all([
           db.invoices.where('business_id').equals(businessId).toArray() as Promise<
             Invoice[]
           >,
@@ -61,23 +54,28 @@ export default function ReceivablesPayablesPage() {
           db.advances.where('business_id').equals(businessId).toArray() as Promise<
             Advance[]
           >,
+          db.sales_returns.where('business_id').equals(businessId).toArray(),
         ]);
         const asOfYmd = todayYmd();
-        const ar = computeReceivables(invoices, asOfYmd, advances, customers);
+        const ar = computeReceivables(
+          invoices,
+          asOfYmd,
+          advances,
+          customers,
+          salesReturns,
+        );
         const ap = computePayables(bills, asOfYmd, advances, suppliers);
         const customerById = new Map(customers.map((c) => [c.id, c]));
         const supplierById = new Map(suppliers.map((s) => [s.id, s]));
-        if (alive) setData({ ar, ap, customerById, supplierById, asOfYmd });
-      } catch (e) {
-        if (alive) setErr(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [businessId]);
+        log.info('ui.receivables-payables.live', 'receivables/payables recomputed from live rows', {
+          businessId,
+          invoiceCount: invoices.length,
+          purchaseCount: bills.length,
+          paymentSource: 'dexie-live-query',
+        });
+        return { ar, ap, customerById, supplierById, asOfYmd };
+  }, [businessId], null);
+  const loading = !!businessId && !data;
 
   const openArRows = useMemo<CustomerReceivable[]>(
     () =>
@@ -110,8 +108,7 @@ export default function ReceivablesPayablesPage() {
       </div>
 
       {bizError && <div className="text-red-600 text-sm">{bizError}</div>}
-      {err && <div className="text-red-600 text-sm">{err}</div>}
-      {loading && <div className="text-slate-500 text-sm">Loading...</div>}
+      {loading && !bizError && <div className="text-slate-500 text-sm">Loading...</div>}
 
       {data && (
         <>

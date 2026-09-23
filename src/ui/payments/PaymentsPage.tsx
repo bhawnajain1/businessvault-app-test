@@ -13,6 +13,7 @@ import type {
   Invoice,
 } from '../../db/types';
 import { PaymentService } from '../../domain/PaymentService';
+import { isActivePurchase } from '../../domain/partyLedger';
 import { SYSTEM_ACCOUNT_CODES } from '../../domain/coa';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
@@ -88,9 +89,14 @@ export default function PaymentsPage() {
         .map((i) => ({ id: i.id, number: i.invoice_number, balancePaise: i.balance_paise }));
     }
     return purchases
-      .filter((p) => p.supplier_id === entryPartyId && p.balance_paise > 0 && p.status !== 'cancelled')
+      .filter((p) => p.supplier_id === entryPartyId && p.balance_paise > 0 && isActivePurchase(p))
       .map((p) => ({ id: p.id, number: p.bill_number, balancePaise: p.balance_paise }));
   }, [entryDirection, entryPartyId, invoices, purchases]);
+
+  const totalOutstandingPaise = openDocuments.reduce(
+    (total, document) => total + document.balancePaise,
+    0,
+  );
 
   const entryAccountOptions = accounts.filter(
     (a) => a.active === 1 && (a.code === SYSTEM_ACCOUNT_CODES.CASH || a.code === SYSTEM_ACCOUNT_CODES.BANK),
@@ -118,10 +124,11 @@ export default function PaymentsPage() {
       (a) => a.code === (entryDirection === 'in' ? SYSTEM_ACCOUNT_CODES.RECEIVABLE : SYSTEM_ACCOUNT_CODES.PAYABLE),
     );
     if (!entryPartyId) return setEntryError('Select a party.');
-    if (!document) return setEntryError(entryDirection === 'in' ? 'Select an open invoice.' : 'Select an open bill.');
     if (!Number.isInteger(amountPaise) || amountPaise <= 0) return setEntryError('Amount must be positive.');
-    if (amountPaise > document.balancePaise) {
-      return setEntryError(`Amount cannot exceed the outstanding balance of ₹${(document.balancePaise / 100).toFixed(2)}.`);
+    if (amountPaise > totalOutstandingPaise) {
+      return setEntryError(
+        `Amount cannot exceed the total outstanding balance of ₹${(totalOutstandingPaise / 100).toFixed(2)}.`,
+      );
     }
     if (!account) return setEntryError('Select a cash or bank account.');
     if (!arOrApAccount) {
@@ -133,6 +140,19 @@ export default function PaymentsPage() {
     setEntrySaving(true);
     setEntryError(null);
     try {
+      let remainingPaise = amountPaise;
+      const documentsToAllocate = document ? [document] : openDocuments;
+      const allocations = documentsToAllocate.flatMap((openDocument) => {
+        if (remainingPaise <= 0) return [];
+        const allocation = Math.min(remainingPaise, openDocument.balancePaise);
+        remainingPaise -= allocation;
+        return [
+          entryDirection === 'in'
+            ? { invoice_id: openDocument.id, amount_paise: allocation }
+            : { bill_id: openDocument.id, amount_paise: allocation },
+        ];
+      });
+
       await new PaymentService(db).createPayment({
         business_id: businessId,
         device_id: deviceId,
@@ -147,11 +167,7 @@ export default function PaymentsPage() {
         amount_paise: amountPaise,
         reference: entryReference.trim() || undefined,
         notes: entryNotes.trim() || undefined,
-        allocations: [
-          entryDirection === 'in'
-            ? { invoice_id: document.id, amount_paise: amountPaise }
-            : { bill_id: document.id, amount_paise: amountPaise },
-        ],
+        allocations,
       });
       setEntryDirection(null);
       setReloadKey((value) => value + 1);

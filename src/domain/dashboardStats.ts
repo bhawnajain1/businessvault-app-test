@@ -40,8 +40,10 @@ export function isLiveInvoice(inv: Invoice): boolean {
 // Symmetric to isLiveInvoice for purchases. Purchase has no `deleted_at`
 // (no recycle-bin on the purchases side yet — see db/types.ts:354).
 export function isLivePurchase(p: Purchase): boolean {
+  if (p.status === 'cancelled') return false;
   if (p.reverses_purchase_id) return false; // debit note
   if (p.reversed_by_purchase_id) return false; // superseded original
+  if (p.replaced_by_purchase_id) return false; // edited original
   return true;
 }
 
@@ -121,7 +123,13 @@ export function computeDashboardStats(inputs: DashboardInputs): DashboardStats {
   // /reports/receivables-payables page uses. Anything else is a drift
   // waiting to happen. See dashboardStats.test.ts:"coherence with
   // computeReceivables" for the pin.
-  const ar = computeReceivables(invoices, asOfYmd, advances, customers);
+  const ar = computeReceivables(
+    invoices,
+    asOfYmd,
+    advances,
+    customers,
+    inputs.salesReturns ?? [],
+  );
   const ap = computePayables(purchases, asOfYmd, advances, suppliers);
 
   const asOfMonth = asOfYmd.slice(0, 7);

@@ -1,8 +1,9 @@
 import { useCallback, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { db } from '../../db';
-import type { Supplier } from '../../db/types';
+import type { Advance, Purchase, Supplier } from '../../db/types';
 import { createSupplierService } from '../../domain/SupplierService';
+import { computePayables } from '../../domain/partyLedger';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
 import Drawer from '../components/Drawer';
@@ -16,6 +17,13 @@ import {
   type GstinStatePair,
 } from '../../lib/gstinStateSync';
 import GstinStateBadge from '../components/GstinStateBadge';
+import { useLiveQuery } from '../hooks/useLiveQuery';
+import { log } from '../../lib/log';
+
+interface SupplierRollup {
+  payable_paise: number;
+  advance_paise: number;
+}
 
 interface SupplierForm {
   name: string;
@@ -62,6 +70,30 @@ export default function SuppliersPage() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const rollups = useLiveQuery<Map<string, SupplierRollup>>(async () => {
+    if (!businessId) return new Map();
+      const [bills, advances] = await Promise.all([
+        db.purchases.where('business_id').equals(businessId).toArray() as Promise<Purchase[]>,
+        db.advances.where('business_id').equals(businessId).toArray() as Promise<Advance[]>,
+      ]);
+      const supplierRows = await db.suppliers.where('business_id').equals(businessId).toArray();
+      const payable = computePayables(bills, new Date().toISOString().slice(0, 10), advances, supplierRows);
+      const next = new Map<string, SupplierRollup>();
+      for (const row of payable.perSupplier) {
+        next.set(row.supplier_id, {
+          payable_paise: row.outstanding_paise,
+          advance_paise: row.advance_paise,
+        });
+      }
+      log.info('ui.suppliers.live', 'supplier rollups recomputed from live rows', {
+        businessId,
+        purchaseCount: bills.length,
+        advanceCount: advances.length,
+        supplierCount: supplierRows.length,
+      });
+      return next;
+  }, [businessId], new Map<string, SupplierRollup>());
+  const currentRollups = rollups ?? new Map<string, SupplierRollup>();
 
   function pairFromForm(): GstinStatePair {
     return {
@@ -138,6 +170,18 @@ export default function SuppliersPage() {
     { key: 'email', header: 'Email', render: (r) => r.email || '—' },
     { key: 'gstin', header: 'GSTIN', filterable: true, render: (r) => r.gstin || '—' },
     { key: 'state', header: 'State', render: (r) => r.state || '—' },
+    {
+      key: 'payable',
+      header: 'Payable',
+      className: 'text-right',
+      render: (r) => <Money paise={currentRollups.get(r.id)?.payable_paise ?? r.opening_balance_paise} />,
+    },
+    {
+      key: 'advance',
+      header: 'Advance',
+      className: 'text-right',
+      render: (r) => <Money paise={currentRollups.get(r.id)?.advance_paise ?? 0} />,
+    },
     {
       key: 'opening_balance',
       header: 'Opening Balance',

@@ -17,6 +17,7 @@ import type {
 import { GENESIS_HASH, canonicalJson, sha256Hex } from '../journal/event';
 import { SYSTEM_ACCOUNT_CODES, findAccountByCode } from './coa';
 import { reconcileAfter } from './reconciliation';
+import { log } from '../lib/log';
 
 // UI-facing payment split — three tendered methods plus "credit" (unpaid).
 // Credit does NOT produce a Payment row; the invoice balance already reflects it.
@@ -158,6 +159,7 @@ export class PaymentService {
       reference: input.reference ?? '',
       notes: input.notes ?? '',
       allocations: allocationsPreview,
+      idempotency_key: input.idempotency_key?.trim() || null,
       journal_entry_id: journalEntryId,
       created_at: now,
       updated_at: now,
@@ -192,10 +194,33 @@ export class PaymentService {
           .where('[business_id+payment_number]')
           .equals([input.business_id, input.payment_number])
           .first();
-        if (existing) return existing;
+        if (existing) {
+          if (!samePaymentRequest(existing, paymentPreview)) {
+            log.warn('payment', 'payment create rejected: identity conflict', {
+              businessId: input.business_id,
+              paymentNumber: input.payment_number,
+              existingPaymentId: existing.id,
+              requestedIdempotencyKey: paymentPreview.idempotency_key,
+            });
+            throw new PaymentValidationError(
+              `payment number "${input.payment_number}" is already used by a different payment`,
+            );
+          }
+          log.info('payment', 'idempotent payment create reused existing row', {
+            businessId: input.business_id,
+            paymentNumber: input.payment_number,
+            paymentId: existing.id,
+          });
+          return existing;
+        }
 
         await this.applyAllocationsToTargets(
-          { business_id: input.business_id, direction: input.direction },
+          {
+            business_id: input.business_id,
+            direction: input.direction,
+            party_type: input.party_type,
+            party_id: input.party_id,
+          },
           allocationsPreview,
           'apply',
         );
@@ -289,12 +314,44 @@ export class PaymentService {
           });
         }
 
+        log.info('payment', 'payment created', {
+          businessId: input.business_id,
+          paymentId,
+          paymentNumber: input.payment_number,
+          amountPaise: input.amount_paise,
+          allocationCount: allocationsPreview.length,
+          advanceAmountPaise: advanceAmount,
+        });
+
         return paymentPreview;
       },
     );
   }
 
   async refundPayment(input: RefundPaymentInput): Promise<Payment> {
+    const requestKey = input.idempotency_key?.trim() || null;
+    if (requestKey) {
+      const prior = await this.db.payments
+        .where('[business_id+idempotency_key]')
+        .equals([input.business_id, requestKey])
+        .first();
+      if (prior) {
+        if (prior.amount_paise >= 0 || !prior.reference.startsWith('refund of ')) {
+          log.warn('payment', 'refund rejected: idempotency key belongs to another payment', {
+            businessId: input.business_id,
+            idempotencyKey: requestKey,
+            paymentId: prior.id,
+          });
+          throw new PaymentValidationError('idempotency key is already used by another payment');
+        }
+        log.info('payment', 'idempotent refund reused existing row', {
+          businessId: input.business_id,
+          idempotencyKey: requestKey,
+          refundPaymentId: prior.id,
+        });
+        return prior;
+      }
+    }
     const original = await this.db.payments.get(input.payment_id);
     if (!original) {
       throw new PaymentValidationError(
@@ -324,6 +381,14 @@ export class PaymentService {
       throw new PaymentValidationError(
         `journal_entry ${original.journal_entry_id} not found`,
       );
+    }
+    if (originalEntry.reversed_by_id) {
+      log.warn('payment', 'refund rejected: payment already reversed', {
+        businessId: input.business_id,
+        paymentId: original.id,
+        reversalJournalId: originalEntry.reversed_by_id,
+      });
+      throw new PaymentValidationError('payment has already been refunded');
     }
     const originalLines = await this.db.journal_lines
       .where('[business_id+entry_id]')
@@ -359,6 +424,7 @@ export class PaymentService {
       reference: `refund of ${original.payment_number}`,
       notes: input.reason,
       allocations: refundAllocations,
+      idempotency_key: requestKey,
       journal_entry_id: refundJournalId,
       created_at: now,
       updated_at: now,
@@ -420,7 +486,12 @@ export class PaymentService {
       ],
       async () => {
         await this.applyAllocationsToTargets(
-          { business_id: input.business_id, direction: original.direction },
+          {
+            business_id: input.business_id,
+            direction: original.direction,
+            party_type: original.party_type,
+            party_id: original.party_id,
+          },
           original.allocations,
           'reverse',
         );
@@ -488,6 +559,12 @@ export class PaymentService {
     await reconcileAfter(input.business_id, 'payment.refund', {
       db: this.db,
     });
+    log.info('payment', 'payment refunded', {
+      businessId: input.business_id,
+      paymentId: original.id,
+      refundPaymentId: refunded.id,
+      amountPaise: original.amount_paise,
+    });
     return refunded;
   }
 
@@ -541,6 +618,7 @@ export class PaymentService {
     const arAccount = await findAccountByCode(
       input.business_id,
       SYSTEM_ACCOUNT_CODES.RECEIVABLE,
+      { db: this.db },
     );
     if (!arAccount) {
       throw new PaymentValidationError(
@@ -567,7 +645,9 @@ export class PaymentService {
       const allocation = Math.min(leg.amount, remainingBalance);
       if (allocation <= 0) break;
 
-      const account = await findAccountByCode(input.business_id, leg.accountCode);
+      const account = await findAccountByCode(input.business_id, leg.accountCode, {
+        db: this.db,
+      });
       if (!account) {
         throw new PaymentValidationError(
           `${leg.method} account (code ${leg.accountCode}) not found — run "Repair chart of accounts".`,
@@ -596,7 +676,12 @@ export class PaymentService {
 
 
   private async applyAllocationsToTargets(
-    ctx: { business_id: string; direction: PaymentDirection },
+    ctx: {
+      business_id: string;
+      direction: PaymentDirection;
+      party_type?: Payment['party_type'];
+      party_id?: string;
+    },
     allocations: PaymentAllocation[],
     mode: 'apply' | 'reverse',
   ): Promise<void> {
@@ -611,6 +696,9 @@ export class PaymentService {
         }
         if (inv.business_id !== ctx.business_id) {
           throw new PaymentValidationError('invoice business_id mismatch');
+        }
+        if (ctx.party_type === 'customer' && ctx.party_id && inv.customer_id !== ctx.party_id) {
+          throw new PaymentValidationError('invoice belongs to a different customer');
         }
         if (mode === 'apply' && a.amount_paise > inv.balance_paise) {
           throw new PaymentValidationError(
@@ -639,6 +727,9 @@ export class PaymentService {
         }
         if (bill.business_id !== ctx.business_id) {
           throw new PaymentValidationError('bill business_id mismatch');
+        }
+        if (ctx.party_type === 'supplier' && ctx.party_id && bill.supplier_id !== ctx.party_id) {
+          throw new PaymentValidationError('bill belongs to a different supplier');
         }
         if (mode === 'apply' && a.amount_paise > bill.balance_paise) {
           throw new PaymentValidationError(
@@ -768,6 +859,20 @@ function previewAllocations(
     );
   }
   return out;
+}
+
+function samePaymentRequest(a: Payment, b: Payment): boolean {
+  return (
+    (a.idempotency_key ?? null) === (b.idempotency_key ?? null) &&
+    a.payment_date === b.payment_date &&
+    a.direction === b.direction &&
+    a.party_type === b.party_type &&
+    a.party_id === b.party_id &&
+    a.method === b.method &&
+    a.account_id === b.account_id &&
+    a.amount_paise === b.amount_paise &&
+    JSON.stringify(a.allocations) === JSON.stringify(b.allocations)
+  );
 }
 
 function validateCreateInput(input: CreatePaymentInput): void {

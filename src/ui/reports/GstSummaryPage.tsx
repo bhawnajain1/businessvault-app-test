@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { db } from '../../db';
 import type { Invoice, InvoiceLine, Item } from '../../db/types';
 import { downloadCsv } from '../../csv/streamCsvExport';
-import { money, parseDateInput, toDateString, financialYearStart } from './reportUtils';
+import { downloadGstrCsv, downloadGstrJson, buildGstrReport, type GstrReportKind } from '../../domain/gstrExport';
+import { money, toDateString, financialYearStart } from './reportUtils';
 import { useBusinessId } from './useBusinessId';
 
 interface SlabRow {
@@ -24,6 +25,8 @@ export default function GstSummaryPage() {
   const [rows, setRows] = useState<SlabRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [reportKind, setReportKind] = useState<GstrReportKind>('gstr1');
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     if (!businessId) return;
@@ -123,6 +126,20 @@ export default function GstSummaryPage() {
     });
   }
 
+  async function exportGstr(format: 'csv' | 'json'): Promise<void> {
+    if (!businessId) return;
+    setExporting(true);
+    try {
+      const report = await buildGstrReport(businessId, reportKind, fromStr, toStr);
+      if (format === 'csv') await downloadGstrCsv(report);
+      else await downloadGstrJson(report);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-end justify-between flex-wrap gap-3">
@@ -155,6 +172,19 @@ export default function GstSummaryPage() {
             className="border border-slate-300 rounded px-3 py-1 text-sm hover:bg-slate-50 disabled:opacity-50"
           >
             Export CSV
+          </button>
+          <label className="text-sm">
+            <span className="block text-slate-500 mb-1">GST report</span>
+            <select value={reportKind} onChange={(e) => setReportKind(e.target.value as GstrReportKind)} className="border border-slate-300 rounded px-2 py-1 text-sm">
+              <option value="gstr1">GSTR1 outward</option>
+              <option value="gstr2">GSTR2 inward</option>
+            </select>
+          </label>
+          <button onClick={() => void exportGstr('csv')} disabled={!businessId || exporting} className="border border-slate-300 rounded px-3 py-1 text-sm hover:bg-slate-50 disabled:opacity-50">
+            {exporting ? 'Preparing...' : 'Download GSTR CSV'}
+          </button>
+          <button onClick={() => void exportGstr('json')} disabled={!businessId || exporting} className="border border-slate-300 rounded px-3 py-1 text-sm hover:bg-slate-50 disabled:opacity-50">
+            Download GSTR JSON
           </button>
         </div>
       </div>

@@ -114,8 +114,18 @@ export async function buildDiagnosticReport(
         .where('business_id')
         .equals(businessRow.id)
         .toArray();
+      const salesReturns = await db.sales_returns
+        .where('business_id')
+        .equals(businessRow.id)
+        .toArray();
       const asOfYmd = new Date().toISOString().slice(0, 10);
-      const receivables = computeReceivables(invoices, asOfYmd);
+      const receivables = computeReceivables(
+        invoices,
+        asOfYmd,
+        [],
+        [],
+        salesReturns,
+      );
       reconciliation = {
         trial_balance_debits_paise: check.totalDebits,
         trial_balance_credits_paise: check.totalCredits,
@@ -209,4 +219,3 @@ export async function downloadDiagnosticReport(
     throw e;
   }
 }
-

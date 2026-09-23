@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { Blob as NodeBlob } from 'node:buffer';
 import { LocalFolderStorageProvider } from './LocalFolderStorageProvider';
 import type { SyncEvent } from './CustomerStorageProvider';
+import { canonicalJson, GENESIS_HASH, sha256Hex } from '../journal/event';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).Blob = NodeBlob;
@@ -300,6 +301,29 @@ describe('LocalFolderStorageProvider', () => {
     const r = await p.verifyIntegrity();
     expect(r.ok).toBe(false);
     expect(r.issues.some((i) => i.code === 'CORRUPT_JOURNAL_LINE')).toBe(true);
+  });
+
+  it('verifyIntegrity validates cryptographic journal chains', async () => {
+    const p = await connectAndInit(root);
+    const payload = { amount: 100 };
+    const payloadHash = await sha256Hex(canonicalJson(payload));
+    await p.writeJournalEvents([
+      mkEvent({ payload, payload_hash: payloadHash, previous_hash: GENESIS_HASH }),
+    ]);
+
+    const clean = await p.verifyIntegrity();
+    expect(clean.ok).toBe(true);
+
+    const journalPath = path.join(
+      root,
+      'BusinessVault/Acme Traders/journal/2026/2026-08.events.jsonl',
+    );
+    const original = await fs.readFile(journalPath, 'utf8');
+    await fs.writeFile(journalPath, original.replace('"amount":100', '"amount":101'));
+
+    const tampered = await p.verifyIntegrity();
+    expect(tampered.ok).toBe(false);
+    expect(tampered.issues.some((i) => i.code === 'PAYLOAD_HASH_MISMATCH')).toBe(true);
   });
 
   it('readSnapshot round-trips CSVs and manifest', async () => {

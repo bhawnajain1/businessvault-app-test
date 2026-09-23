@@ -106,7 +106,17 @@ export async function reconcileAfter(
     .equals(businessId)
     .toArray();
   const asOfYmd = new Date().toISOString().slice(0, 10);
-  const receivables = computeReceivables(invoices, asOfYmd);
+  const salesReturns = await db.sales_returns
+    .where('business_id')
+    .equals(businessId)
+    .toArray();
+  const receivables = computeReceivables(
+    invoices,
+    asOfYmd,
+    [],
+    [],
+    salesReturns,
+  );
   const perCustomerSum = receivables.perCustomer.reduce(
     (s, c) => s + c.outstanding_paise,
     0,

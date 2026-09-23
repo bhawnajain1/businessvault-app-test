@@ -17,16 +17,99 @@ import { log } from '../lib/log';
 // set. Any live (deleted_at == null) invoice keeps the number locked.
 
 const MAX_SCAN = 10_000;
-const NUMBER_PATTERN = /^([A-Za-z0-9_\-\/]+)-(\d+)$/;
+// Invoice numbers are user-facing labels. They may be numeric (7652),
+// prefixed numeric (INV-7652), or alphanumeric (SI7652).
+const NUMBER_PATTERN = /^([A-Za-z][A-Za-z0-9_\/\-]*?)(?:-)?(\d+)$/;
 
-function pad(seq: number): string {
-  return String(seq).padStart(6, '0');
+function formatSequence(sequence: number, width: number): string {
+  return String(sequence).padStart(width, '0');
+}
+
+export function parseInvoiceNumber(
+  invoiceNumber: string,
+): { prefix: string; sequence: number } | null {
+  const trimmed = invoiceNumber.trim();
+  if (/^\d+$/.test(trimmed)) {
+    const sequence = Number(trimmed);
+    return Number.isSafeInteger(sequence) ? { prefix: '', sequence } : null;
+  }
+  const match = NUMBER_PATTERN.exec(trimmed);
+  if (!match) return null;
+  const sequence = Number(match[2]);
+  return Number.isSafeInteger(sequence) ? { prefix: match[1], sequence } : null;
+}
+
+function formatInvoiceNumber(prefix: string, sequence: number, width = 3): string {
+  return `${prefix}${formatSequence(sequence, width)}`;
+}
+
+function legacyFormatInvoiceNumber(prefix: string, sequence: number): string {
+  return `${prefix}${String(sequence).padStart(6, '0')}`;
+}
+
+function parsedPrefixForSeries(prefix: string): string {
+  return prefix.endsWith('-') ? prefix.slice(0, -1) : prefix;
+}
+
+function seriesFormat(
+  rows: Array<{ invoice_number: string; created_at?: string }>,
+  prefix: string,
+): { legacy: boolean; prefix: string; width: number } {
+  const normalizedPrefix = parsedPrefixForSeries(prefix);
+  const seriesRows = rows
+    .map((row) => ({ row, parsed: parseInvoiceNumber(row.invoice_number) }))
+    .filter(
+      ({ parsed }) => parsed?.prefix === normalizedPrefix,
+    )
+    .sort((a, b) => {
+      const createdDelta = (b.row.created_at ?? '').localeCompare(a.row.created_at ?? '');
+      if (createdDelta !== 0) return createdDelta;
+      return (b.parsed?.sequence ?? 0) - (a.parsed?.sequence ?? 0);
+    });
+  if (seriesRows.length === 0) {
+    return { legacy: false, prefix, width: 3 };
+  }
+  const number = seriesRows[0].row.invoice_number.trim();
+  const match = number.match(/(\d+)$/);
+  const digits = match?.[1] ?? '';
+  const parsed = seriesRows[0].parsed!;
+  const separator = number.slice(parsed.prefix.length, number.length - digits.length);
+  const formattedPrefix = `${parsed.prefix}${separator}`;
+  return {
+    legacy: separator === '-' && digits.length >= 6,
+    prefix: formattedPrefix,
+    width: digits.length || 3,
+  };
+}
+
+function nextSequenceForFormat(
+  rows: Array<{ invoice_number: string }>,
+  format: { prefix: string; width: number },
+  fallback: number,
+): number {
+  let highest = 0;
+  let matchingRows = 0;
+  for (const row of rows) {
+    const parsed = parseInvoiceNumber(row.invoice_number);
+    if (!parsed || parsed.prefix !== parsedPrefixForSeries(format.prefix)) continue;
+    const digits = row.invoice_number.trim().match(/(\d+)$/)?.[1] ?? '';
+    const separator = row.invoice_number.trim().slice(
+      parsed.prefix.length,
+      row.invoice_number.trim().length - digits.length,
+    );
+    if (`${parsed.prefix}${separator}` !== format.prefix || digits.length !== format.width) {
+      continue;
+    }
+    matchingRows++;
+    highest = Math.max(highest, parsed.sequence);
+  }
+  return matchingRows === 0 ? fallback : highest + 1;
 }
 
 /**
  * Format sanity check for a proposed invoice number.
  *
- * Enforces the same shape as auto-allocation (`PREFIX-\d+`) so party ledgers,
+   * Enforces the same shape as auto-allocation (`PREFIX\d+`) so party ledgers,
  * search, and financial-year sort remain stable. Format-only — does NOT hit
  * the DB. Combine with `isInvoiceNumberAvailable` for the full uniqueness
  * check.
@@ -40,17 +123,17 @@ export function validateInvoiceNumber(
   if (trimmed.length > 40) {
     return { ok: false, error: 'Invoice number is too long (max 40 characters).' };
   }
-  const m = NUMBER_PATTERN.exec(trimmed);
-  if (!m) {
+  const parsed = parseInvoiceNumber(trimmed);
+  if (!parsed && !/^\d+$/.test(trimmed)) {
     return {
       ok: false,
-      error: 'Invoice number must be "PREFIX-<digits>" (e.g. INV-000123).',
+      error: 'Invoice number must be numeric or alphanumeric (e.g. 7652 or INV-7652).',
     };
   }
-  if (expectedPrefix && m[1] !== expectedPrefix) {
+  if (expectedPrefix && parsed && parsed.prefix !== expectedPrefix && parsed.prefix !== `${expectedPrefix}-`) {
     return {
       ok: false,
-      error: `Invoice number must start with the "${expectedPrefix}-" series.`,
+      error: `Invoice number must start with the "${expectedPrefix}" series.`,
     };
   }
   return { ok: true };
@@ -83,21 +166,39 @@ export async function isInvoiceNumberAvailable(
   return true;
 }
 
-/**
- * Compute the next auto-allocation candidate WITHOUT bumping the counter.
- *
- * Scans for the lowest recycled-gap number (a `prefix-N` where every row
- * bearing it is deleted_at != null) below `invoice_next_seq`, then falls
- * back to `invoice_next_seq` if no gap is reusable. Read-only — used by the
- * form to preview the number before save.
- */
+function latestInvoiceFormat(
+  rows: Array<{ invoice_number: string; created_at?: string }>,
+  fallbackPrefix: string,
+  fallbackSequence: number,
+): { prefix: string; width: number; sequence: number } {
+  const latest = [...rows]
+    .map((row) => ({ row, parsed: parseInvoiceNumber(row.invoice_number) }))
+    .filter(({ parsed }) => parsed !== null)
+    .sort((a, b) => (b.row.created_at ?? '').localeCompare(a.row.created_at ?? ''))[0];
+  if (!latest?.parsed) {
+    return { prefix: fallbackPrefix, width: 3, sequence: fallbackSequence };
+  }
+  const number = latest.row.invoice_number.trim();
+  const digits = number.match(/(\d+)$/)?.[1] ?? '';
+  const separator = number.slice(
+    latest.parsed.prefix.length,
+    number.length - digits.length,
+  );
+  return {
+    prefix: `${latest.parsed.prefix}${separator}`,
+    width: digits.length || 3,
+    sequence: latest.parsed.sequence,
+  };
+}
+
+/** Compute the next number from the most recently entered invoice number. */
 export async function getNextAvailableInvoiceNumber(
   db: BusinessVaultDB,
   businessId: string,
 ): Promise<string> {
   const biz = await db.businesses.get(businessId);
   if (!biz) throw new Error('Business not found');
-  const prefix = biz.invoice_prefix || 'INV';
+  const prefix = biz.invoice_prefix ?? 'INV';
   const nextSeq = biz.invoice_next_seq;
 
   // Pull every invoice for this business that matches the prefix. Volumes are
@@ -105,31 +206,15 @@ export async function getNextAvailableInvoiceNumber(
   // cheaper than N point-lookups; a business with tens of thousands of rows
   // still costs O(rows) here, not O(seq).
   const all = await db.invoices.where('business_id').equals(businessId).toArray();
-  const byNumber = new Map<string, { anyLive: boolean }>();
-  for (const inv of all) {
-    if (!inv.invoice_number.startsWith(`${prefix}-`)) continue;
-    const entry = byNumber.get(inv.invoice_number) ?? { anyLive: false };
-    const live = !inv.deleted_at && !inv.reversed_by_invoice_id;
-    if (live) entry.anyLive = true;
-    byNumber.set(inv.invoice_number, entry);
-  }
-
-  // Scan seq 1..(nextSeq-1) for the lowest number that either doesn't exist
-  // or exists only as recycled/superseded rows.
-  for (let seq = 1; seq < nextSeq; seq++) {
-    const candidate = `${prefix}-${pad(seq)}`;
-    const entry = byNumber.get(candidate);
-    if (!entry || !entry.anyLive) {
-      log.info('invoice_numbering', 'reusing recycled gap', {
-        businessId,
-        candidate,
-        nextSeq,
-        rowsAtCandidate: entry ? 1 : 0,
-      });
-      return candidate;
-    }
-  }
-  return `${prefix}-${pad(nextSeq)}`;
+  const latest = latestInvoiceFormat(all, prefix, nextSeq - 1);
+  const seriesNextSeq = latest.sequence + 1;
+  log.info('invoice_numbering', 'previewing next number', {
+    businessId,
+    seriesPrefix: latest.prefix,
+    digitWidth: latest.width,
+    nextSeq: seriesNextSeq,
+  });
+  return formatInvoiceNumber(latest.prefix, seriesNextSeq, latest.width);
 }
 
 // Allocate an invoice number and reserve it (bumps `invoice_next_seq` if the
@@ -149,7 +234,7 @@ export async function allocateInvoiceNumber(
   return db.transaction('rw', [db.businesses, db.invoices], async () => {
     const biz = await db.businesses.get(businessId);
     if (!biz) throw new Error('Business not found');
-    const prefix = biz.invoice_prefix || 'INV';
+    const prefix = biz.invoice_prefix ?? 'INV';
     const nextSeq = biz.invoice_next_seq;
 
     // Preferred path: reuse a recycled-gap slot below the counter.
@@ -157,32 +242,26 @@ export async function allocateInvoiceNumber(
       .where('business_id')
       .equals(businessId)
       .toArray();
+    const latest = latestInvoiceFormat(all, prefix, nextSeq - 1);
+    const seriesNextSeq = latest.sequence + 1;
+    log.info('invoice_numbering', 'allocating number', {
+      businessId,
+      seriesPrefix: latest.prefix,
+      digitWidth: latest.width,
+      nextSeq: seriesNextSeq,
+    });
     const byNumber = new Map<string, { anyLive: boolean }>();
     for (const inv of all) {
-      if (!inv.invoice_number.startsWith(`${prefix}-`)) continue;
+      const parsed = parseInvoiceNumber(inv.invoice_number);
+      if (!parsed) continue;
       const entry = byNumber.get(inv.invoice_number) ?? { anyLive: false };
       const live = !inv.deleted_at && !inv.reversed_by_invoice_id;
       if (live) entry.anyLive = true;
       byNumber.set(inv.invoice_number, entry);
     }
-    for (let seq = 1; seq < nextSeq; seq++) {
-      const candidate = `${prefix}-${pad(seq)}`;
-      const entry = byNumber.get(candidate);
-      if (!entry || !entry.anyLive) {
-        log.info('invoice_numbering', 'allocated from recycled gap', {
-          businessId,
-          candidate,
-          nextSeq,
-        });
-        // Counter is untouched: the gap is below it. No update needed.
-        return candidate;
-      }
-    }
-
-    // Fallback: walk forward from invoice_next_seq past any drift-collisions.
-    let seq = nextSeq;
+    let seq = seriesNextSeq;
     for (let i = 0; i < MAX_SCAN; i++) {
-      const candidate = `${prefix}-${pad(seq)}`;
+      const candidate = formatInvoiceNumber(latest.prefix, seq, latest.width);
       const entry = byNumber.get(candidate);
       if (!entry || !entry.anyLive) {
         await db.businesses.update(businessId, {
