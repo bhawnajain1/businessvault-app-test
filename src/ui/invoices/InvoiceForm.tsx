@@ -376,24 +376,6 @@ export default function InvoiceForm() {
           invoice_number: invoiceNumber,
         });
 
-        const cashPaise = toPaise(payments.cashStr);
-        const cardPaise = toPaise(payments.cardStr);
-        const upiPaise = toPaise(payments.upiStr);
-        if (cashPaise > 0 || cardPaise > 0 || upiPaise > 0) {
-          await paymentSvc.postInvoicePayments({
-            business_id: businessId,
-            device_id: deviceId,
-            invoice_id: saved.id,
-            payment_date: invoiceDate,
-            split: {
-              cash_paise: cashPaise,
-              card_paise: cardPaise,
-              upi_paise: upiPaise,
-              credit_paise: toPaise(payments.creditStr),
-            },
-          });
-        }
-
         // Apply any selected advances (customer only, new invoice only).
         for (const [advId, str] of Object.entries(advanceAllocations)) {
           const paise = Math.round(Number(str) * 100);
@@ -407,6 +389,26 @@ export default function InvoiceForm() {
             applied_on: invoiceDate,
           });
         }
+      }
+
+      // Payments apply to the newly created invoice on both create and edit.
+      // updateInvoice reissues the invoice, so post after it returns.
+      const cashPaise = toPaise(payments.cashStr);
+      const cardPaise = toPaise(payments.cardStr);
+      const upiPaise = toPaise(payments.upiStr);
+      if (cashPaise > 0 || cardPaise > 0 || upiPaise > 0) {
+        await paymentSvc.postInvoicePayments({
+          business_id: businessId,
+          device_id: deviceId,
+          invoice_id: saved.id,
+          payment_date: invoiceDate,
+          split: {
+            cash_paise: cashPaise,
+            card_paise: cardPaise,
+            upi_paise: upiPaise,
+            credit_paise: toPaise(payments.creditStr),
+          },
+        });
       }
       if (opts?.thenPrint) {
         navigate(`/invoices/${saved.id}/print`);
