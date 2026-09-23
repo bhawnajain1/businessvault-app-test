@@ -20,13 +20,24 @@ export default function Dashboard() {
       // filtering / derivation lives in src/domain/dashboardStats.ts so
       // it can be unit-tested without React. Prior regression (PR #52):
       // summing raw `balance_paise` double-counted rename-edit trios.
-      const [invoices, purchases, customers, suppliers, advances, itemCount] =
+      const [
+        invoices,
+        purchases,
+        customers,
+        suppliers,
+        advances,
+        salesReturns,
+        payments,
+        itemCount,
+      ] =
         await Promise.all([
           db.invoices.where('business_id').equals(businessId).toArray(),
           db.purchases.where('business_id').equals(businessId).toArray(),
           db.customers.where('business_id').equals(businessId).toArray(),
           db.suppliers.where('business_id').equals(businessId).toArray(),
           db.advances.where('business_id').equals(businessId).toArray(),
+          db.sales_returns.where('business_id').equals(businessId).toArray(),
+          db.payments.where('business_id').equals(businessId).toArray(),
           db.items.where('business_id').equals(businessId).count(),
         ]);
 
@@ -37,6 +48,8 @@ export default function Dashboard() {
         customers,
         suppliers,
         advances,
+        salesReturns,
+        payments,
         itemCount,
         asOfYmd,
       });
@@ -132,6 +145,8 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {stats && <AnalyticsPanel stats={stats} />}
+
       <div className="border border-slate-200 rounded bg-white">
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
           <h2 className="text-sm font-semibold text-slate-700">Recent invoices</h2>
@@ -206,5 +221,89 @@ function Card({
       <div className="text-sm text-slate-600">{label}</div>
       <div className="mt-1 text-2xl font-semibold text-slate-900">{value}</div>
     </Link>
+  );
+}
+
+function AnalyticsPanel({ stats }: { stats: DashboardStats }) {
+  const monthlyMax = Math.max(
+    1,
+    ...stats.analytics.monthly.flatMap((month) => [month.sales_paise, month.collections_paise]),
+  );
+  const mixMax = Math.max(1, ...stats.analytics.paymentMix.map((row) => row.amount_paise));
+  const customerMax = Math.max(
+    1,
+    ...stats.analytics.topCustomers.map((row) => row.outstanding_paise),
+  );
+
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5" aria-labelledby="analytics-heading">
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h2 id="analytics-heading" className="text-base font-semibold text-slate-900">Business pulse</h2>
+          <p className="mt-1 text-sm text-slate-600">A quick view of sales, collections, and customer exposure.</p>
+        </div>
+        <span className="text-xs text-slate-500">Last 6 months</span>
+      </div>
+
+      <div className="mt-5 grid gap-5 lg:grid-cols-[1.6fr_1fr]">
+        <div>
+          <div className="mb-3 flex items-center gap-4 text-xs text-slate-600">
+            <Legend color="bg-slate-900" label="Sales" />
+            <Legend color="bg-blue-600" label="Collections" />
+          </div>
+          <div className="flex h-44 items-end gap-2 sm:gap-4" role="img" aria-label="Sales and collections for the last six months">
+            {stats.analytics.monthly.map((month) => (
+              <div key={month.key} className="flex min-w-0 flex-1 flex-col items-center justify-end gap-2">
+                <div className="flex h-36 w-full items-end justify-center gap-1">
+                  <div className="w-1/2 max-w-6 rounded-t bg-slate-900" style={{ height: `${Math.max(4, (month.sales_paise / monthlyMax) * 100)}%` }} title={`Sales: ${month.sales_paise / 100} INR`} />
+                  <div className="w-1/2 max-w-6 rounded-t bg-blue-600" style={{ height: `${Math.max(4, (month.collections_paise / monthlyMax) * 100)}%` }} title={`Collections: ${month.collections_paise / 100} INR`} />
+                </div>
+                <span className="text-xs text-slate-600">{month.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-1">
+          <BarList title="Payment mix" empty="No payments yet." rows={stats.analytics.paymentMix.map((row) => ({ label: row.method.toUpperCase(), value: row.amount_paise, max: mixMax }))} />
+          <BarList title="Top customer balances" empty="No outstanding balances." rows={stats.analytics.topCustomers.map((row) => ({ label: row.name, value: row.outstanding_paise, max: customerMax }))} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Legend({ color, label }: { color: string; label: string }) {
+  return <span className="inline-flex items-center gap-1.5"><span className={`h-2.5 w-2.5 rounded-sm ${color}`} />{label}</span>;
+}
+
+function BarList({
+  title,
+  empty,
+  rows,
+}: {
+  title: string;
+  empty: string;
+  rows: Array<{ label: string; value: number; max: number }>;
+}) {
+  return (
+    <div>
+      <h3 className="mb-2 text-sm font-semibold text-slate-800">{title}</h3>
+      {rows.length === 0 ? <p className="text-sm text-slate-500">{empty}</p> : (
+        <div className="space-y-2">
+          {rows.map((row) => (
+            <div key={row.label}>
+              <div className="mb-1 flex justify-between gap-2 text-xs text-slate-600">
+                <span className="truncate">{row.label}</span>
+                <Money paise={row.value} />
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                <div className="h-full rounded-full bg-blue-600" style={{ width: `${Math.max(3, (row.value / row.max) * 100)}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

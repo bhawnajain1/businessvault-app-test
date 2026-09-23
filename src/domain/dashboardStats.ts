@@ -19,6 +19,7 @@ import type {
   Advance,
   Customer,
   Invoice,
+  Payment,
   Purchase,
   Supplier,
 } from '../db/types';
@@ -73,6 +74,18 @@ export interface DashboardStats {
     supersededPurchases: number;
     debitNotes: number;
   };
+  analytics: DashboardAnalytics;
+}
+
+export interface DashboardAnalytics {
+  monthly: Array<{
+    key: string;
+    label: string;
+    sales_paise: number;
+    collections_paise: number;
+  }>;
+  paymentMix: Array<{ method: string; amount_paise: number }>;
+  topCustomers: Array<{ name: string; outstanding_paise: number }>;
 }
 
 export interface DashboardInputs {
@@ -81,6 +94,8 @@ export interface DashboardInputs {
   customers: Customer[];
   suppliers: Supplier[];
   advances: Advance[];
+  salesReturns?: SalesReturn[];
+  payments?: Payment[];
   itemCount: number;
   asOfYmd: string;
   recentLimit?: number;
@@ -107,6 +122,50 @@ export function computeDashboardStats(inputs: DashboardInputs): DashboardStats {
   // computeReceivables" for the pin.
   const ar = computeReceivables(invoices, asOfYmd, advances, customers);
   const ap = computePayables(purchases, asOfYmd, advances, suppliers);
+
+  const asOfMonth = asOfYmd.slice(0, 7);
+  const monthKeys: string[] = [];
+  const monthCursor = new Date(`${asOfMonth}-01T00:00:00Z`);
+  for (let i = 5; i >= 0; i -= 1) {
+    const date = new Date(monthCursor);
+    date.setUTCMonth(date.getUTCMonth() - i);
+    monthKeys.push(date.toISOString().slice(0, 7));
+  }
+  const monthLabels = new Intl.DateTimeFormat('en', { month: 'short' });
+  const monthly = monthKeys.map((key) => {
+    const date = new Date(`${key}-01T00:00:00Z`);
+    const collections = (inputs.payments ?? []).filter(
+      (payment) =>
+        payment.direction === 'in' &&
+        payment.party_type === 'customer' &&
+        !payment.deleted_at &&
+        payment.payment_date.startsWith(key),
+    );
+    return {
+      key,
+      label: monthLabels.format(date),
+      sales_paise: liveInvoices
+        .filter((invoice) => invoice.invoice_date.startsWith(key))
+        .reduce((sum, invoice) => sum + Math.max(0, invoice.total_paise), 0),
+      collections_paise: collections.reduce(
+        (sum, payment) => sum + Math.max(0, payment.amount_paise),
+        0,
+      ),
+    };
+  });
+
+  const paymentMix = (inputs.payments ?? [])
+    .filter(
+      (payment) =>
+        payment.direction === 'in' && !payment.deleted_at && payment.payment_date <= asOfYmd,
+    )
+    .reduce((byMethod, payment) => {
+      byMethod.set(
+        payment.method,
+        (byMethod.get(payment.method) ?? 0) + Math.max(0, payment.amount_paise),
+      );
+      return byMethod;
+    }, new Map<string, number>());
 
   const customerNameById = new Map(customers.map((c) => [c.id, c.name]));
   const recentInvoices: RecentInvoiceRow[] = [...liveInvoices]
@@ -140,6 +199,19 @@ export function computeDashboardStats(inputs: DashboardInputs): DashboardStats {
       supersededPurchases: purchases.filter((p) => !!p.reversed_by_purchase_id)
         .length,
       debitNotes: purchases.filter((p) => !!p.reverses_purchase_id).length,
+    },
+    analytics: {
+      monthly,
+      paymentMix: [...paymentMix.entries()]
+        .map(([method, amount_paise]) => ({ method, amount_paise }))
+        .sort((a, b) => b.amount_paise - a.amount_paise),
+      topCustomers: ar.perCustomer
+        .filter((customer) => customer.outstanding_paise > 0)
+        .slice(0, 5)
+        .map((customer) => ({
+          name: customerNameById.get(customer.customer_id) ?? 'Unknown customer',
+          outstanding_paise: customer.outstanding_paise,
+        })),
     },
   };
 }
