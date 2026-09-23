@@ -354,6 +354,36 @@ describe('computeDashboardStats — coherence with computeReceivables', () => {
 });
 
 describe('computeDashboardStats — individual filter cases', () => {
+  it('derives a six-month sales series and ranks customer exposure', () => {
+    const stats = computeDashboardStats({
+      invoices: [
+        mkInvoice('old', 'INV-OLD', 12000, { invoice_date: '2026-04-12' }),
+        mkInvoice('new', 'INV-NEW', 25000, { invoice_date: '2026-08-12' }),
+      ],
+      purchases: [],
+      customers: [mkCustomer()],
+      suppliers: [],
+      advances: NO_ADVANCES,
+      itemCount: 0,
+      asOfYmd: '2026-08-27',
+    });
+
+    expect(stats.analytics.monthly).toHaveLength(6);
+    expect(stats.analytics.monthly.map((month) => month.key)).toEqual([
+      '2026-03',
+      '2026-04',
+      '2026-05',
+      '2026-06',
+      '2026-07',
+      '2026-08',
+    ]);
+    expect(stats.analytics.monthly[1].sales_paise).toBe(12000);
+    expect(stats.analytics.monthly[5].sales_paise).toBe(25000);
+    expect(stats.analytics.topCustomers).toEqual([
+      { name: 'Ravi', outstanding_paise: 37000 },
+    ]);
+  });
+
   it('excludes recycled invoices from the count and Recent list', () => {
     const invoices: Invoice[] = [
       mkInvoice('a', 'INV-1', 1000),
