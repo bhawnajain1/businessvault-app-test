@@ -13,6 +13,10 @@ interface NavSection {
 
 const SECTIONS: NavSection[] = [
   {
+    title: 'Overview',
+    items: [{ to: '/', label: 'Dashboard', end: true }],
+  },
+  {
     title: 'Sell',
     items: [
       { to: '/pos', label: 'POS' },
