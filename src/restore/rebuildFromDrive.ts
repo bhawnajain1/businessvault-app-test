@@ -413,39 +413,41 @@ export async function rebuildFromDrive(
     // 6. replay journal events after the snapshot's checkpoint
     progress('Replaying journal events', 70);
 
-    await opts.db.transaction(
-      'rw',
-      tableNames(),
-      async () => {
-        for (const evt of events) {
-          try {
-            const result = await applyEvent(evt, {
-              db: opts.db,
-              businessId: selected.businessId,
-              diagnostics,
-            });
-            if (result === 'applied') replayed++;
-            else {
-              unhandled++;
-              diagnostics.push(
-                `event ${evt.event_id} (${evt.entity_type}:${evt.operation}) has no replay handler`,
-              );
-            }
-          } catch (err) {
-            log.warn('restore.replay.event-failed', 'restore: journal event replay failed', {
-              businessId: selected.businessId,
-              eventId: evt.event_id,
-              entityType: evt.entity_type,
-              operation: evt.operation,
-              error: err,
-            });
-            diagnostics.push(
-              `event ${evt.event_id} (${evt.entity_type}:${evt.operation}) failed: ${(err as Error).message}`,
-            );
-          }
+    // Replay each event in its own short transaction. Keeping the entire
+    // journal inside one transaction allows IndexedDB to commit between
+    // awaited handler operations, which Dexie reports as "Transaction
+    // committed too early" on larger Google Drive restores.
+    for (const evt of events) {
+      try {
+        let wasApplied = false;
+        await opts.db.transaction('rw', tableNames(), async () => {
+          const result = await applyEvent(evt, {
+            db: opts.db,
+            businessId: selected.businessId,
+            diagnostics,
+          });
+          wasApplied = result === 'applied';
+        });
+        if (wasApplied) replayed++;
+        else {
+          unhandled++;
+          diagnostics.push(
+            `event ${evt.event_id} (${evt.entity_type}:${evt.operation}) has no replay handler`,
+          );
         }
-      },
-    );
+      } catch (err) {
+        log.warn('restore.replay.event-failed', 'restore: journal event replay failed', {
+          businessId: selected.businessId,
+          eventId: evt.event_id,
+          entityType: evt.entity_type,
+          operation: evt.operation,
+          error: err,
+        });
+        diagnostics.push(
+          `event ${evt.event_id} (${evt.entity_type}:${evt.operation}) failed: ${(err as Error).message}`,
+        );
+      }
+    }
     log.info('restore.replay.complete', 'restore: journal replay complete', {
       businessId: selected.businessId,
       eventCount: events.length,
