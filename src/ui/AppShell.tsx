@@ -53,7 +53,7 @@ export default function AppShell() {
             <StorageBootBanner />
           </div>
           <div className="app-shell-body flex flex-1 overflow-hidden">
-            <div data-print-hide>
+            <div data-print-hide className="h-full min-h-0">
               <Sidebar />
             </div>
             <main className="app-shell-main flex-1 overflow-y-auto bg-app">

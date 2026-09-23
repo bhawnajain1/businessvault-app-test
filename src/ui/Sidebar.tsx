@@ -78,7 +78,7 @@ const linkActive = 'bg-surface-hover text-fg font-medium';
 export default function Sidebar() {
   return (
     <nav
-      className="w-56 shrink-0 border-r border-border bg-app px-3 py-4 overflow-y-auto"
+      className="h-full min-h-0 w-56 shrink-0 overflow-y-auto border-r border-border bg-app px-3 py-4"
       aria-label="Primary"
     >
       <ul className="space-y-4">
