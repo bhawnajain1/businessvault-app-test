@@ -1396,6 +1396,23 @@ export class InvoiceService {
       );
     }
 
+    const activeReturns = await this.db.sales_returns
+      .where('[business_id+original_invoice_id]')
+      .equals([original.business_id, invoiceId])
+      .filter((salesReturn) => salesReturn.status === 'posted' && !salesReturn.deleted_at)
+      .toArray();
+    if (activeReturns.length > 0) {
+      log.warn('invoice', 'updateInvoice rejected because active sales returns exist', {
+        invoiceId,
+        invoiceNumber: original.invoice_number,
+        activeReturnCount: activeReturns.length,
+        activeReturnIds: activeReturns.map((salesReturn) => salesReturn.id),
+      });
+      throw new Error(
+        'Cannot edit an invoice with active sales returns; cancel the sales returns first, then edit the invoice.',
+      );
+    }
+
     // §3 invoice-number rename. Determine the target number for the reissue.
     // If the caller passed a new one, validate it and record the audit trail.
     const proposedNumber = (input.invoice_number ?? '').trim();
@@ -1507,6 +1524,12 @@ export class InvoiceService {
       void originalLines;
     }
 
+    log.info('invoice', 'updateInvoice starting reversal and reissue', {
+      invoiceId,
+      invoiceNumber: original.invoice_number,
+      proposedNumber: isRename ? proposedNumber : original.invoice_number,
+      lineCount: input.lines.length,
+    });
     await this.reverseInvoicePosting(invoiceId, 'edit');
     const nextNumber = isRename ? proposedNumber : original.invoice_number;
 
@@ -1540,9 +1563,26 @@ export class InvoiceService {
     // field which we set explicitly here.
     const { invoice_number: _ignored, ...rest } = input;
     void _ignored;
-    const reissued = await this.createInvoice({
-      ...rest,
-      invoice_number: nextNumber,
+    let reissued: Invoice;
+    try {
+      reissued = await this.createInvoice({
+        ...rest,
+        invoice_number: nextNumber,
+      });
+    } catch (error) {
+      log.error('invoice', 'updateInvoice reissue failed after reversal', {
+        invoiceId,
+        invoiceNumber: original.invoice_number,
+        proposedNumber: nextNumber,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+    log.info('invoice', 'updateInvoice reissue completed', {
+      originalInvoiceId: invoiceId,
+      reissuedInvoiceId: reissued.id,
+      invoiceNumber: reissued.invoice_number,
+      totalPaise: reissued.total_paise,
     });
     // §17 post-op reconciliation. The edit path is a reverse + reissue —
     // net effect on TB should be the new invoice's total. If the mirror

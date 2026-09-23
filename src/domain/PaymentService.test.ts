@@ -3,6 +3,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { BusinessVaultDB } from '../db/database';
 import type { Invoice, Purchase, Account } from '../db/types';
 import { PaymentService, PaymentValidationError } from './PaymentService';
+import { SYSTEM_ACCOUNT_CODES } from './coa';
 
 const BIZ = 'biz-01HXYZ';
 const DEV = 'dev-01HXYZ';
@@ -108,11 +109,12 @@ function makeBill(id: string, total: number, paid = 0): Purchase {
 
 async function seed(db: BusinessVaultDB): Promise<void> {
   await db.accounts.bulkAdd([
-    makeAccount('acc-cash', '1100', 'asset'),
-    makeAccount('acc-ar', '1200', 'asset'),
-    makeAccount('acc-ap', '2100', 'liability'),
-    makeAccount('acc-cust-adv', '2050', 'liability'),
-    makeAccount('acc-sup-adv', '1250', 'asset'),
+    makeAccount('acc-cash', SYSTEM_ACCOUNT_CODES.CASH, 'asset'),
+    makeAccount('acc-bank', SYSTEM_ACCOUNT_CODES.BANK, 'asset'),
+    makeAccount('acc-ar', SYSTEM_ACCOUNT_CODES.RECEIVABLE, 'asset'),
+    makeAccount('acc-ap', SYSTEM_ACCOUNT_CODES.PAYABLE, 'liability'),
+    makeAccount('acc-cust-adv', SYSTEM_ACCOUNT_CODES.CUSTOMER_ADVANCE, 'liability'),
+    makeAccount('acc-sup-adv', SYSTEM_ACCOUNT_CODES.SUPPLIER_ADVANCE, 'asset'),
   ]);
 }
 
@@ -555,6 +557,38 @@ describe('PaymentService.createPayment', () => {
         allocations: [{ as_advance: true, amount_paise: 10000 }],
       }),
     ).rejects.toBeInstanceOf(PaymentValidationError);
+  });
+});
+
+describe('PaymentService.postInvoicePayments', () => {
+  beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+  });
+
+  it('persists cash, card, and UPI legs and fully settles the invoice', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-split', 100000));
+
+    const created = await new PaymentService(db).postInvoicePayments({
+      business_id: BIZ,
+      device_id: DEV,
+      invoice_id: 'inv-split',
+      payment_date: '2026-08-19',
+      split: {
+        cash_paise: 25000,
+        card_paise: 25000,
+        upi_paise: 50000,
+        credit_paise: 0,
+      },
+    });
+
+    expect(created.map((payment) => payment.method)).toEqual(['cash', 'card', 'upi']);
+    expect(await db.payments.where('business_id').equals(BIZ).count()).toBe(3);
+    const invoice = await db.invoices.get('inv-split');
+    expect(invoice?.paid_paise).toBe(100000);
+    expect(invoice?.balance_paise).toBe(0);
+    expect(invoice?.status).toBe('paid');
   });
 });
 

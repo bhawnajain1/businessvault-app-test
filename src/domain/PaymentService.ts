@@ -618,6 +618,7 @@ export class PaymentService {
     const arAccount = await findAccountByCode(
       input.business_id,
       SYSTEM_ACCOUNT_CODES.RECEIVABLE,
+      { db: this.db },
     );
     if (!arAccount) {
       throw new PaymentValidationError(
@@ -644,7 +645,9 @@ export class PaymentService {
       const allocation = Math.min(leg.amount, remainingBalance);
       if (allocation <= 0) break;
 
-      const account = await findAccountByCode(input.business_id, leg.accountCode);
+      const account = await findAccountByCode(input.business_id, leg.accountCode, {
+        db: this.db,
+      });
       if (!account) {
         throw new PaymentValidationError(
           `${leg.method} account (code ${leg.accountCode}) not found — run "Repair chart of accounts".`,

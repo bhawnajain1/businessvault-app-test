@@ -814,20 +814,23 @@ describe('SalesReturnService.createSalesReturn', () => {
           },
         ],
       }),
-    ).rejects.toThrow(/already been returned/);
+    ).rejects.toThrow(/active sales returns/);
 
-    // Editing back up to the same 10 (or higher) must succeed.
-    await invSvc.updateInvoice(inv.id, {
-      business_id: businessId,
-      device_id: deviceId,
-      invoice_date: inv.invoice_date,
-      customer_id: customerId,
-      customer_state_code: '29',
-      place_of_supply: '29',
-      is_interstate: false,
-      financial_year: '2026-27',
-      lines: [tenUnitLine()],
-    });
+    // Active returns must be cancelled before editing; otherwise the return
+    // would remain attached to the superseded invoice.
+    await expect(
+      invSvc.updateInvoice(inv.id, {
+        business_id: businessId,
+        device_id: deviceId,
+        invoice_date: inv.invoice_date,
+        customer_id: customerId,
+        customer_state_code: '29',
+        place_of_supply: '29',
+        is_interstate: false,
+        financial_year: '2026-27',
+        lines: [tenUnitLine()],
+      }),
+    ).rejects.toThrow(/active sales returns/);
   });
 
   // ------- PR3: audit_log + real cancel reversal ---------------------------
@@ -1224,7 +1227,7 @@ describe('SalesReturnService.createSalesReturn', () => {
     expect(invAfterCancel!.balance_paise).toBe(balanceBeforeSr);
   });
 
-  it('E2E invariant: original invoice totals are IMMUTABLE across a partial return + a subsequent edit', async () => {
+  it('E2E invariant: original invoice totals remain immutable and active returns block edits', async () => {
     const inv = await makeInvoice('INV-INV1');
     const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
     const beforeTotal = inv.total_paise;
@@ -1244,10 +1247,8 @@ describe('SalesReturnService.createSalesReturn', () => {
     expect(stillOriginal!.total_paise).toBe(beforeTotal);
     expect(stillOriginal!.taxable_paise).toBe(beforeTaxable);
 
-    // Edit the invoice — bump qty from 10 to 12 (above returned qty of 4).
-    // The edit path reissues the invoice under the same invoice_number; the
-    // reissued row's total should reflect the new qty. The ORIGINAL row is
-    // marked reversed_by_invoice_id.
+    // Editing with an active return is blocked so the return cannot remain
+    // attached to a superseded invoice.
     const twelveUnitLine = {
       ...tenUnitLine(),
       qty_micros: 12_000_000,
@@ -1256,22 +1257,24 @@ describe('SalesReturnService.createSalesReturn', () => {
       sgst_paise: 10_800,
       line_total_paise: 141_600,
     };
-    await invSvc.updateInvoice(inv.id, {
-      business_id: businessId,
-      device_id: deviceId,
-      invoice_date: inv.invoice_date,
-      customer_id: customerId,
-      customer_state_code: '29',
-      place_of_supply: '29',
-      is_interstate: false,
-      financial_year: '2026-27',
-      lines: [twelveUnitLine],
-    });
+    await expect(
+      invSvc.updateInvoice(inv.id, {
+        business_id: businessId,
+        device_id: deviceId,
+        invoice_date: inv.invoice_date,
+        customer_id: customerId,
+        customer_state_code: '29',
+        place_of_supply: '29',
+        is_interstate: false,
+        financial_year: '2026-27',
+        lines: [twelveUnitLine],
+      }),
+    ).rejects.toThrow(/active sales returns/);
     // Original invoice STILL has its historical total_paise.
     const originalAgain = await db.invoices.get(inv.id);
     expect(originalAgain!.total_paise).toBe(beforeTotal);
     expect(originalAgain!.taxable_paise).toBe(beforeTaxable);
-    // But is now marked as superseded.
-    expect(originalAgain!.reversed_by_invoice_id).not.toBeNull();
+    // The edit was rejected, so the original remains active and immutable.
+    expect(originalAgain!.reversed_by_invoice_id).toBeNull();
   });
 });
