@@ -248,14 +248,14 @@ function AnalyticsPanel({ stats }: { stats: DashboardStats }) {
       <div className="mt-5 grid gap-5 lg:grid-cols-[1.6fr_1fr]">
         <div>
           <div className="mb-3 flex items-center gap-4 text-xs text-slate-600">
-            <Legend color="bg-slate-900" label="Sales" />
+            <Legend color="bg-red-600" label="Sales" />
             <Legend color="bg-blue-600" label="Collections" />
           </div>
           <div className="flex h-44 items-end gap-2 sm:gap-4" role="img" aria-label="Sales and collections for the last six months">
             {stats.analytics.monthly.map((month) => (
               <div key={month.key} className="flex min-w-0 flex-1 flex-col items-center justify-end gap-2">
                 <div className="flex h-36 w-full items-end justify-center gap-1">
-                  <div className="w-1/2 max-w-6 rounded-t bg-slate-900" style={{ height: `${Math.max(4, (month.sales_paise / monthlyMax) * 100)}%` }} title={`Sales: ${month.sales_paise / 100} INR`} />
+                  <div className="w-1/2 max-w-6 rounded-t bg-red-600" style={{ height: `${Math.max(4, (month.sales_paise / monthlyMax) * 100)}%` }} title={`Sales: ${month.sales_paise / 100} INR`} />
                   <div className="w-1/2 max-w-6 rounded-t bg-blue-600" style={{ height: `${Math.max(4, (month.collections_paise / monthlyMax) * 100)}%` }} title={`Collections: ${month.collections_paise / 100} INR`} />
                 </div>
                 <span className="text-xs text-slate-600">{month.label}</span>
