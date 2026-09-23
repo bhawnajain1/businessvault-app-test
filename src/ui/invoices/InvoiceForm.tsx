@@ -539,7 +539,7 @@ export default function InvoiceForm() {
                 setInvoiceNumberOverride(e.target.value);
               }
             }}
-            placeholder={nextInvoiceNumber || `${business.invoice_prefix || 'INV'}001`}
+            placeholder={nextInvoiceNumber || `${business.invoice_prefix ?? 'INV'}001`}
             aria-describedby="invoice-number-help"
             aria-label="Invoice number"
             pattern="[A-Za-z][A-Za-z0-9_/-]*[0-9]+"

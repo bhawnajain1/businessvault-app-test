@@ -426,9 +426,11 @@ export class InvoiceService {
             const enteredNumber = input.invoice_number.trim();
             const digitMatch = enteredNumber.match(/(\d+)$/);
             const seriesPrefix =
-              enteredNumber.includes('-') && (digitMatch?.[1].length ?? 0) < 6
-                ? `${parsedNumber.prefix}-`
-                : parsedNumber.prefix;
+              parsedNumber.prefix === ''
+                ? ''
+                : enteredNumber.includes('-') && (digitMatch?.[1].length ?? 0) < 6
+                  ? `${parsedNumber.prefix}-`
+                  : parsedNumber.prefix;
             const nextSeq = Math.max(business.invoice_next_seq, parsedNumber.sequence + 1);
             await this.db.businesses.update(input.business_id, {
               invoice_prefix: seriesPrefix,

@@ -28,7 +28,12 @@ function formatSequence(sequence: number, width: number): string {
 export function parseInvoiceNumber(
   invoiceNumber: string,
 ): { prefix: string; sequence: number } | null {
-  const match = NUMBER_PATTERN.exec(invoiceNumber.trim());
+  const trimmed = invoiceNumber.trim();
+  if (/^\d+$/.test(trimmed)) {
+    const sequence = Number(trimmed);
+    return Number.isSafeInteger(sequence) ? { prefix: '', sequence } : null;
+  }
+  const match = NUMBER_PATTERN.exec(trimmed);
   if (!match) return null;
   const sequence = Number(match[2]);
   return Number.isSafeInteger(sequence) ? { prefix: match[1], sequence } : null;
@@ -161,21 +166,39 @@ export async function isInvoiceNumberAvailable(
   return true;
 }
 
-/**
- * Compute the next auto-allocation candidate WITHOUT bumping the counter.
- *
- * Scans for the lowest recycled-gap number (a `prefix-N` where every row
- * bearing it is deleted_at != null) below `invoice_next_seq`, then falls
- * back to `invoice_next_seq` if no gap is reusable. Read-only — used by the
- * form to preview the number before save.
- */
+function latestInvoiceFormat(
+  rows: Array<{ invoice_number: string; created_at?: string }>,
+  fallbackPrefix: string,
+  fallbackSequence: number,
+): { prefix: string; width: number; sequence: number } {
+  const latest = [...rows]
+    .map((row) => ({ row, parsed: parseInvoiceNumber(row.invoice_number) }))
+    .filter(({ parsed }) => parsed !== null)
+    .sort((a, b) => (b.row.created_at ?? '').localeCompare(a.row.created_at ?? ''))[0];
+  if (!latest?.parsed) {
+    return { prefix: fallbackPrefix, width: 3, sequence: fallbackSequence };
+  }
+  const number = latest.row.invoice_number.trim();
+  const digits = number.match(/(\d+)$/)?.[1] ?? '';
+  const separator = number.slice(
+    latest.parsed.prefix.length,
+    number.length - digits.length,
+  );
+  return {
+    prefix: `${latest.parsed.prefix}${separator}`,
+    width: digits.length || 3,
+    sequence: latest.parsed.sequence,
+  };
+}
+
+/** Compute the next number from the most recently entered invoice number. */
 export async function getNextAvailableInvoiceNumber(
   db: BusinessVaultDB,
   businessId: string,
 ): Promise<string> {
   const biz = await db.businesses.get(businessId);
   if (!biz) throw new Error('Business not found');
-  const prefix = biz.invoice_prefix || 'INV';
+  const prefix = biz.invoice_prefix ?? 'INV';
   const nextSeq = biz.invoice_next_seq;
 
   // Pull every invoice for this business that matches the prefix. Volumes are
@@ -183,45 +206,15 @@ export async function getNextAvailableInvoiceNumber(
   // cheaper than N point-lookups; a business with tens of thousands of rows
   // still costs O(rows) here, not O(seq).
   const all = await db.invoices.where('business_id').equals(businessId).toArray();
-  const format = seriesFormat(all, prefix);
-  const seriesNextSeq = nextSequenceForFormat(all, format, nextSeq);
+  const latest = latestInvoiceFormat(all, prefix, nextSeq - 1);
+  const seriesNextSeq = latest.sequence + 1;
   log.info('invoice_numbering', 'previewing next number', {
     businessId,
-    seriesPrefix: format.prefix,
-    digitWidth: format.width,
-    legacyFormat: format.legacy,
+    seriesPrefix: latest.prefix,
+    digitWidth: latest.width,
     nextSeq: seriesNextSeq,
   });
-  const byNumber = new Map<string, { anyLive: boolean }>();
-  for (const inv of all) {
-    const parsed = parseInvoiceNumber(inv.invoice_number);
-    if (!parsed || parsed.prefix !== parsedPrefixForSeries(prefix)) continue;
-    const entry = byNumber.get(inv.invoice_number) ?? { anyLive: false };
-    const live = !inv.deleted_at && !inv.reversed_by_invoice_id;
-    if (live) entry.anyLive = true;
-    byNumber.set(inv.invoice_number, entry);
-  }
-
-  // Scan seq 1..(nextSeq-1) for the lowest number that either doesn't exist
-  // or exists only as recycled/superseded rows.
-  if (format.legacy) {
-    for (let seq = 1; seq < seriesNextSeq; seq++) {
-      const candidate = legacyFormatInvoiceNumber(format.prefix, seq);
-      const entry = byNumber.get(candidate);
-      if (!entry || !entry.anyLive) {
-        log.info('invoice_numbering', 'reusing recycled gap', {
-          businessId,
-          candidate,
-          nextSeq: seriesNextSeq,
-          rowsAtCandidate: entry ? 1 : 0,
-        });
-        return candidate;
-      }
-    }
-  }
-  return format.legacy
-    ? legacyFormatInvoiceNumber(format.prefix, seriesNextSeq)
-    : formatInvoiceNumber(format.prefix, seriesNextSeq, format.width);
+  return formatInvoiceNumber(latest.prefix, seriesNextSeq, latest.width);
 }
 
 // Allocate an invoice number and reserve it (bumps `invoice_next_seq` if the
@@ -241,7 +234,7 @@ export async function allocateInvoiceNumber(
   return db.transaction('rw', [db.businesses, db.invoices], async () => {
     const biz = await db.businesses.get(businessId);
     if (!biz) throw new Error('Business not found');
-    const prefix = biz.invoice_prefix || 'INV';
+    const prefix = biz.invoice_prefix ?? 'INV';
     const nextSeq = biz.invoice_next_seq;
 
     // Preferred path: reuse a recycled-gap slot below the counter.
@@ -249,46 +242,26 @@ export async function allocateInvoiceNumber(
       .where('business_id')
       .equals(businessId)
       .toArray();
-    const format = seriesFormat(all, prefix);
-    const seriesNextSeq = nextSequenceForFormat(all, format, nextSeq);
+    const latest = latestInvoiceFormat(all, prefix, nextSeq - 1);
+    const seriesNextSeq = latest.sequence + 1;
     log.info('invoice_numbering', 'allocating number', {
       businessId,
-      seriesPrefix: format.prefix,
-      digitWidth: format.width,
-      legacyFormat: format.legacy,
+      seriesPrefix: latest.prefix,
+      digitWidth: latest.width,
       nextSeq: seriesNextSeq,
     });
     const byNumber = new Map<string, { anyLive: boolean }>();
     for (const inv of all) {
       const parsed = parseInvoiceNumber(inv.invoice_number);
-     if (!parsed || parsed.prefix !== parsedPrefixForSeries(prefix)) continue;
+      if (!parsed) continue;
       const entry = byNumber.get(inv.invoice_number) ?? { anyLive: false };
       const live = !inv.deleted_at && !inv.reversed_by_invoice_id;
       if (live) entry.anyLive = true;
       byNumber.set(inv.invoice_number, entry);
     }
-    if (format.legacy) {
-      for (let seq = 1; seq < seriesNextSeq; seq++) {
-        const candidate = legacyFormatInvoiceNumber(format.prefix, seq);
-        const entry = byNumber.get(candidate);
-        if (!entry || !entry.anyLive) {
-          log.info('invoice_numbering', 'allocated from recycled gap', {
-            businessId,
-            candidate,
-            nextSeq: seriesNextSeq,
-          });
-          // Counter is untouched: the gap is below it. No update needed.
-          return candidate;
-        }
-      }
-    }
-
-    // Fallback: walk forward from invoice_next_seq past any drift-collisions.
     let seq = seriesNextSeq;
     for (let i = 0; i < MAX_SCAN; i++) {
-      const candidate = format.legacy
-        ? legacyFormatInvoiceNumber(format.prefix, seq)
-        : formatInvoiceNumber(format.prefix, seq, format.width);
+      const candidate = formatInvoiceNumber(latest.prefix, seq, latest.width);
       const entry = byNumber.get(candidate);
       if (!entry || !entry.anyLive) {
         await db.businesses.update(businessId, {

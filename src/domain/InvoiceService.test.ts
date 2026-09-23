@@ -1477,6 +1477,38 @@ describe('InvoiceService — editable invoice number (feedback §3 §4)', () => 
     expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('TS003');
   });
 
+  it('switches to the numeric series after a manually entered numeric invoice', async () => {
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'AB13',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: '123',
+      invoice_date: '2026-08-20',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    expect((await db.businesses.get(businessId))?.invoice_prefix).toBe('');
+    expect((await db.businesses.get(businessId))?.invoice_next_seq).toBe(124);
+    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('124');
+    expect(await allocateInvoiceNumber(db, businessId)).toBe('124');
+  });
+
   it('continues a manually entered hyphenated series exactly', async () => {
     await service.createInvoice({
       business_id: businessId,
@@ -1587,7 +1619,7 @@ describe('InvoiceService — editable invoice number (feedback §3 §4)', () => 
     expect(await isInvoiceNumberAvailable(db, businessId, 'INV-000001')).toBe(true);
   });
 
-  it('getNextAvailableInvoiceNumber reuses the lowest recycled gap before the counter', async () => {
+  it('continues from the latest invoice instead of reusing a recycled gap', async () => {
     const inv1 = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -1619,12 +1651,12 @@ describe('InvoiceService — editable invoice number (feedback §3 §4)', () => 
     // No gaps yet — next auto should be INV-000003.
     expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('INV-000003');
 
-    // Recycle INV-000001; that number should now be the lowest gap.
+    // Recycling an older invoice does not change the latest invoice pattern.
     await service.deleteInvoice(inv1.id, 'testing');
-    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('INV-000001');
+    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('INV-000003');
   });
 
-  it('allocateInvoiceNumber consumes the recycled gap without bumping the counter', async () => {
+  it('allocates after the latest invoice instead of reusing a recycled gap', async () => {
     const inv1 = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -1653,10 +1685,9 @@ describe('InvoiceService — editable invoice number (feedback §3 §4)', () => 
     await service.deleteInvoice(inv1.id, 'testing');
 
     const next = await allocateInvoiceNumber(db, businessId);
-    expect(next).toBe('INV-000001');
-    // Counter untouched — gap was below invoice_next_seq.
+    expect(next).toBe('INV-000003');
     const biz = await db.businesses.get(businessId);
-    expect(biz?.invoice_next_seq).toBe(3);
+    expect(biz?.invoice_next_seq).toBe(4);
   });
 
   it('editing an invoice with a new number: renames the reissue and writes an audit_log row', async () => {
