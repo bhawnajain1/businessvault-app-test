@@ -267,7 +267,7 @@ export default function Onboarding() {
 
   const handleFinish = useCallback(() => {
     clearFormStash();
-    navigate('/pos');
+    navigate('/');
   }, [navigate]);
 
   return (
