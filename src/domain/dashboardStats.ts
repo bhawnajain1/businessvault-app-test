@@ -21,6 +21,7 @@ import type {
   Invoice,
   Payment,
   Purchase,
+  SalesReturn,
   Supplier,
 } from '../db/types';
 import { computePayables, computeReceivables } from './partyLedger';
